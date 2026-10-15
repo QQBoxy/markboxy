@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#eef2f4"/><title>Markboxy</title></head>
+<body>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+<symbol id="i-arrow" viewBox="0 0 32 32"><path fill="currentColor" d="M27 5 14 17 13 12 5 27 20 20 15 20Z"/></symbol>
+<symbol id="i-shape" viewBox="0 0 32 32"><path d="M7 7H25V25H7Z" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+<symbol id="i-pen" viewBox="0 0 32 32"><path fill="currentColor" d="m6 22 3 3 17-17-5-5L4 20l-1 8 7-2-3-1-2-3Z"/></symbol>
+<symbol id="i-stamp" viewBox="0 0 32 32"><path d="M5 13h5a9 9 0 1 1 0 7H5l-3-3Z" fill="currentColor"/><circle cx="20" cy="16.5" r="6" fill="#eef1f2"/><path d="m18 14 4 5m0-5-4 5" stroke="currentColor" stroke-width="1.7"/></symbol>
+<symbol id="i-crop" viewBox="0 0 32 32"><path d="M8 2v22h22M2 8h22v22" fill="none" stroke="currentColor" stroke-width="3"/><path d="M13 8h11v11M8 13v11h11" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="4 2"/></symbol>
+<symbol id="i-size" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="white" stroke="#aaa" stroke-width="1.5"/><path d="m10 22 12-12" stroke="currentColor" stroke-width="5"/></symbol>
+<symbol id="i-pin" viewBox="0 0 32 32"><path fill="currentColor" stroke="#777" stroke-width=".5" d="m21 4 7 7-5 1-7 7-1 5-4-4-7 7 6-8-4-4 5-1 7-7Z"/></symbol>
+<symbol id="i-share" viewBox="0 0 32 32"><path d="M20 6v-4l10 9-10 8v-5c-6-1-11 3-13 8 0-9 5-15 13-16Z" fill="currentColor"/><path d="M13 9H4v20h22V19" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+<symbol id="i-trash" viewBox="0 0 32 32"><path d="M8 10h16l-1 19H9Z M5 7h22 M12 7V3h8v4 M13 13v12m6-12v12" fill="none" stroke="currentColor" stroke-width="2.5"/></symbol>
+<symbol id="i-file" viewBox="0 0 32 32"><path d="M7 2h12l7 7v22H7Z" fill="currentColor"/><path d="M19 2v8h7" fill="none" stroke="#777"/></symbol>
+<symbol id="i-folder" viewBox="0 0 32 32"><path fill="currentColor" d="M2 9h11l3 3h14l-6 17H2Zm1-5h11l3 3h10v3H3Z"/></symbol>
+</defs></svg>
+<div class="app-title" aria-label="Markboxy 視窗"><span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>Markboxy</div>
+<header class="topbar" aria-label="主工具列">
+<button class="account" disabled title="P0 不提供 Evernote 登入"><span class="grid-icon" aria-hidden="true">▦</span>登入以保存到 Evernote...</button>
+<div class="capture"><button id="capture" aria-label="螢幕速拍選單" aria-expanded="false"><svg><use href="#i-crop"/></svg><span>螢幕速拍</span><b>▾</b></button>
+<div id="capture-menu" class="capture-menu" hidden><button disabled><svg><use href="#i-crop"/></svg>全螢幕</button><button disabled><svg><use href="#i-crop"/></svg>螢幕速拍...</button><button disabled><span class="timer">◷</span>定時螢幕速拍...</button><button disabled><svg><use href="#i-folder"/></svg>開啟影像檔 或 PDF 檔案...</button><button id="blank"><svg><use href="#i-file"/></svg>空白</button></div></div>
+<div class="top-actions"><button id="share" title="匯出 PNG…" aria-label="匯出 PNG"><svg><use href="#i-share"/></svg></button><span></span><button id="trash" title="清除畫布（可以復原）" aria-label="清除畫布"><svg><use href="#i-trash"/></svg></button></div>
+</header>
+<main id="editor" aria-label="圖片標註編輯器">
+<aside class="rail" aria-label="標註工具列"><div class="rail-content">
+<div id="tools">
+<button id="arrow-tool" class="tool selected" aria-label="箭頭工具" aria-pressed="true" title="在影像中加入箭頭"><svg><use href="#i-arrow"/></svg></button>
+<button class="tool text-tool" disabled aria-label="文字工具（暫緩）" title="文字工具暫緩">a</button>
+<button class="tool sub" disabled aria-label="圖形工具（尚未實作）"><svg><use href="#i-shape"/></svg></button>
+<button class="tool sub" disabled aria-label="繪圖工具（尚未實作）"><svg><use href="#i-pen"/></svg></button>
+<button class="tool sub" disabled aria-label="圖章工具（尚未實作）"><svg><use href="#i-stamp"/></svg></button>
+<button class="tool" disabled aria-label="裁切工具（尚未實作）"><svg><use href="#i-crop"/></svg></button>
+<div class="rail-divider"></div>
+<button id="color-toggle" class="tool sub" aria-label="色彩" aria-expanded="false" title="色彩"><span id="current-color" class="swatch"></span></button>
+<button id="size-toggle" class="tool sub" aria-label="大小" aria-expanded="false" title="大小"><svg><use href="#i-size"/></svg></button>
+</div>
+<div id="color-panel" class="palette" hidden aria-label="色盤"><button class="tool pin" aria-label="釘選色盤" aria-pressed="false" title="開啟圖釘工具"><svg><use href="#i-pin"/></svg></button>
+<button class="tool" data-color="#ff2600" aria-label="紅色"><span class="swatch" style="--swatch:#ff2600"></span></button>
+<button class="tool" data-color="#ff9300" aria-label="橘色"><span class="swatch" style="--swatch:#ff9300"></span></button>
+<button class="tool" data-color="#fffb00" aria-label="黃色"><span class="swatch" style="--swatch:#fffb00"></span></button>
+<button class="tool" data-color="#00d500" aria-label="綠色"><span class="swatch" style="--swatch:#00d500"></span></button>
+<button class="tool" data-color="#1e90ff" aria-label="藍色"><span class="swatch" style="--swatch:#1e90ff"></span></button>
+<button class="tool" data-color="#f52980" aria-label="粉紅色"><span class="swatch" style="--swatch:#f52980"></span></button>
+<button class="tool" data-color="#ffffff" aria-label="白色"><span class="swatch" style="--swatch:#fff"></span></button>
+<button class="tool" data-color="#000000" aria-label="黑色"><span class="swatch" style="--swatch:#000"></span></button>
+<label class="tool custom-color" title="自訂色彩"><span class="swatch rainbow"></span><input id="color" type="color" aria-label="自訂色彩"/></label>
+</div>
+<div id="size-panel" class="palette" hidden aria-label="五級尺寸"><button class="tool pin" aria-label="釘選尺寸" aria-pressed="false" title="開啟圖釘工具"><svg><use href="#i-pin"/></svg></button><div class="size-gap"></div>
+<button class="tool" data-size="8" aria-label="最小尺寸"><span class="size-stroke" style="--weight:1px"></span></button><button class="tool" data-size="16" aria-label="小尺寸"><span class="size-stroke" style="--weight:2px"></span></button><button class="tool" data-size="28" aria-label="中尺寸"><span class="size-stroke" style="--weight:3px"></span></button><button class="tool" data-size="42" aria-label="大尺寸"><span class="size-stroke" style="--weight:4px"></span></button><button class="tool" data-size="58.35153922542205" aria-label="最大尺寸"><svg><use href="#i-size"/></svg></button>
+</div></div></aside>
+<div id="workspace" class="workspace"><div id="stage" class="stage"><canvas id="canvas" width="1130" height="732" tabindex="0" aria-label="箭頭畫布：空白處拖曳新增；點箭身選取或拖曳移動；拖曳兩端圓點調整；Delete 刪除；Escape 取消。">請使用支援 Canvas 的瀏覽器。</canvas><button class="extend up" disabled aria-label="向上延展畫布（尚未實作）">+</button><button class="extend right" disabled aria-label="向右延展畫布（尚未實作）">+</button><button class="extend down" disabled aria-label="向下延展畫布（尚未實作）">+</button><button class="extend left" disabled aria-label="向左延展畫布（尚未實作）">+</button></div></div>
+</main>
+<footer class="bottom-bar"><div class="document-controls"><div class="footer-control"><button id="zoom" aria-label="縮放比例" aria-expanded="false">100%<small>▾</small></button><div id="zoom-menu" class="bottom-menu" hidden aria-label="縮放選單"><button data-zoom="fit">符合視窗</button><button data-zoom="0.5">50%</button><button data-zoom="1">100%</button><button data-zoom="1.5">150%</button><button data-zoom="2">200%</button></div></div><input id="name" aria-label="文件名稱" value="空白" maxlength="100" spellcheck="false"/><div class="footer-control"><button id="format" aria-label="輸出格式" aria-expanded="false">.png<small>▾</small></button><div id="format-menu" class="bottom-menu" hidden aria-label="格式選單"><button aria-pressed="true">✓ PNG</button><button disabled>Skitch PNG</button><button disabled>JPG</button><button disabled>Skitch JPG</button><button disabled>PDF</button><button disabled>TIFF</button><button disabled>BMP</button></div></div></div>
+<button id="export" class="export-tray" draggable="true" aria-label="匯出或拖出 PNG" title="點一下匯出 PNG；也可拖出圖片"><span class="grip"></span><span class="png-file"><b>PNG</b></span><span class="grip"></span></button><span id="dimensions">1130 x 732</span></footer>
+<div id="notification" hidden><p id="status" role="status" aria-live="polite"></p><a id="download" hidden download="空白.png">再次下載 PNG</a><button id="close-notification" aria-label="關閉通知">×</button></div>
+<dialog id="export-dialog"><form id="export-form"><h2>匯出</h2><label>名稱：<input id="export-name" required maxlength="100" value="空白"/></label><label>格式：<select aria-label="匯出格式"><option>PNG</option></select></label><p>1130 × 732 像素</p><div class="dialog-actions"><button id="cancel-export" type="button">取消</button><button class="default" type="submit">匯出</button></div></form></dialog>
+<script type="module" src="/src/main.ts"></script>
+</body></html>

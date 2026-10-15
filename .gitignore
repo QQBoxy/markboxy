@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+
+# Local reverse-engineering inputs and private tooling
+*.app/
+.agents/
+.codex/
+.aws/
+.env
+.env.*
+analysis/
