@@ -10,3 +10,5 @@ dist/
 .env
 .env.*
 analysis/
+.toolchains/
+src-tauri/target/

@@ -8,36 +8,39 @@ export const referenceArrow: Arrow = {
   color: '#1977ff',
 };
 
-/** A sample-calibrated outline, not a claim to recover Skitch's full algorithm. */
+/** Skitch outline reconstructed from runtime exports and the native geometry procedure. */
 export function arrowPath({ start, end, size }: Pick<Arrow, 'start' | 'end' | 'size'>): string {
   if (![start.x, start.y, end.x, end.y, size].every(Number.isFinite) || size <= 0) {
     throw new RangeError('Arrow coordinates must be finite and size must be positive.');
   }
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
+  const dx = end.x - start.x, dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   if (!Number.isFinite(length)) throw new RangeError('Arrow length is too large.');
   if (length < 0.01) return '';
-
-  // ponytail: calibrated from one outline; add targeted samples before claiming full Skitch parity.
-  // Limit thickness on short arrows to keep the head and neck from crossing the tail.
-  const s = Math.min(size, length * 0.28);
-  const neck = length - s * 1.5696543677;
-  const head = length - s * 1.7266294603;
+  // 120 original vectors cover five native sizes, three lengths and eight directions.
+  const s = Math.min(size, length / 5);
+  const headScale = (s - 1.5) * .7 + 6;
+  const headLength = Math.min(length * .4, Math.max(6, headScale * 2));
+  const tail = Math.max(s * .08, 1.5);
+  const neckHalf = Math.max(tail, Math.min(headLength * .25, headScale * .5));
+  const neck = length - headLength, head = length - headLength * 1.1;
+  const headHalf = headLength * .55;
+  const c1x = neck * .5, c2x = (length * .5 + neck) * .5;
+  const c2y = (tail + neckHalf) * .5, c1y = (tail + c2y) * .5;
+  const tangent = Math.hypot(neck, neckHalf - tail);
+  const capX = -tail * 1.5 * neck / tangent;
+  const capY = tail - tail * 1.5 * (neckHalf - tail) / tangent;
   const point = (x: number, y: number) => {
     const px = start.x + (x * dx - y * dy) / length;
     const py = start.y + (x * dy + y * dx) / length;
     return `${px.toFixed(6)},${py.toFixed(6)}`;
   };
   return [
-    `M${point(0, -s * 0.08)}`,
-    `C${point(neck * 0.5, -s * 0.1581)} ${point(neck * 0.82395717, -s * 0.2362037)} ${point(neck, -s * 0.39241195)}`,
-    `L${point(head, -s * 0.86331014)}`,
-    `L${point(length, 0)}`,
-    `L${point(head, s * 0.86331014)}`,
-    `L${point(neck, s * 0.39241195)}`,
-    `C${point(neck * 0.82395717, s * 0.2362037)} ${point(neck * 0.5, s * 0.1581)} ${point(0, s * 0.08)}`,
-    `C${point(-s * 0.11979353, s * 0.07295007)} ${point(-s * 0.11979353, -s * 0.07295007)} ${point(0, -s * 0.08)}Z`,
+    `M${point(0, -tail)}`,
+    `C${point(c1x, -c1y)} ${point(c2x, -c2y)} ${point(neck, -neckHalf)}`,
+    `L${point(head, -headHalf)}L${point(length, 0)}L${point(head, headHalf)}L${point(neck, neckHalf)}`,
+    `C${point(c2x, c2y)} ${point(c1x, c1y)} ${point(0, tail)}`,
+    `C${point(capX, capY)} ${point(capX, -capY)} ${point(0, -tail)}Z`,
   ].join('');
 }
 
@@ -71,7 +74,7 @@ export function expandedCanvas(width: number, height: number, arrow: Arrow) {
   const offsetY = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.y))));
   const nextWidth = Math.max(width, Math.ceil(Math.max(...extrema.map(p => p.x)))) + offsetX;
   const nextHeight = Math.max(height, Math.ceil(Math.max(...extrema.map(p => p.y)))) + offsetY;
-  // ponytail: bound P0 canvas/data-URL memory; revisit with large-image/Blob export.
+  // ponytail: keep decoded images and export surfaces within 4096 pixels per side; revisit with measured large-image memory budgets.
   if (nextWidth > 4096 || nextHeight > 4096) throw new RangeError('畫布延展上限為 4096 × 4096 像素。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
 }

@@ -63,3 +63,15 @@ test('canvas expands for the entire outline and rebases left/top overflow withou
   assert.equal(above.height, 732 + above.offsetY);
   assert.throws(() => expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 5000, y: 200 } }), RangeError);
 });
+
+test('all 120 native Skitch vectors match within the source serialization precision', () => {
+  const matrix = JSON.parse(readFileSync(new URL('./fixtures/skitch-arrow-matrix.json', import.meta.url), 'utf8'));
+  assert.equal(matrix.length, 120);
+  let max = 0;
+  for (const sample of matrix) {
+    const expected = numbers(sample.path).slice(0, 28), actual = numbers(arrowPath(sample));
+    assert.equal(actual.length, expected.length);
+    actual.forEach((value, i) => { max = Math.max(max, Math.abs(value - expected[i])); assert.ok(Math.abs(value - expected[i]) < .002, `level ${sample.level}, coordinate ${i}: ${value} vs ${expected[i]}`); });
+  }
+  console.log(`120 original arrow vectors: maximum coordinate error ${max.toFixed(6)} px`);
+});

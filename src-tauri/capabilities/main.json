@@ -1,0 +1,6 @@
+{
+  "identifier": "main-local",
+  "description": "Local editor window events only. File access is restricted to Rust native picker commands.",
+  "windows": ["main", "editor-*"],
+  "permissions": ["core:event:default"]
+}
