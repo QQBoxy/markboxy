@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#eef2f4"/><title>Markboxy</title></head>
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/><meta name="theme-color" content="#eef2f4"/><title>Markboxy</title></head>
 <body>
 <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
 <symbol id="i-arrow" viewBox="0 0 32 32"><path fill="currentColor" d="M27 5 14 17 13 12 5 27 20 20 15 20Z"/></symbol>
@@ -15,7 +15,7 @@
 <symbol id="i-file" viewBox="0 0 32 32"><path d="M7 2h12l7 7v22H7Z" fill="currentColor"/><path d="M19 2v8h7" fill="none" stroke="#777"/></symbol>
 <symbol id="i-folder" viewBox="0 0 32 32"><path fill="currentColor" d="M2 9h11l3 3h14l-6 17H2Zm1-5h11l3 3h10v3H3Z"/></symbol>
 </defs></svg>
-<div class="app-title" aria-label="Markboxy 視窗"><span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>Markboxy</div>
+<div class="app-title" aria-label="Markboxy 視窗">Markboxy</div>
 <header class="topbar" aria-label="主工具列">
 <button class="account" disabled title="P0 不提供 Evernote 登入"><span class="grid-icon" aria-hidden="true">▦</span>登入以保存到 Evernote...</button>
 <div class="capture"><button id="capture" aria-label="螢幕速拍選單" aria-expanded="false"><svg><use href="#i-crop"/></svg><span>螢幕速拍</span><b>▾</b></button>
@@ -49,11 +49,12 @@
 <div id="size-panel" class="palette" hidden aria-label="五級尺寸"><button class="tool pin" aria-label="釘選尺寸" aria-pressed="false" title="開啟圖釘工具"><svg><use href="#i-pin"/></svg></button><div class="size-gap"></div>
 <button class="tool" data-size="8" aria-label="最小尺寸"><span class="size-stroke" style="--weight:1px"></span></button><button class="tool" data-size="16" aria-label="小尺寸"><span class="size-stroke" style="--weight:2px"></span></button><button class="tool" data-size="28" aria-label="中尺寸"><span class="size-stroke" style="--weight:3px"></span></button><button class="tool" data-size="42" aria-label="大尺寸"><span class="size-stroke" style="--weight:4px"></span></button><button class="tool" data-size="58.35153922542205" aria-label="最大尺寸"><svg><use href="#i-size"/></svg></button>
 </div></div></aside>
+<div id="arrow-menu" popover="manual" aria-label="箭頭操作"><button id="delete-arrow" type="button">刪除</button></div>
 <div id="workspace" class="workspace"><div id="stage" class="stage"><canvas id="canvas" width="1130" height="732" tabindex="0" aria-label="箭頭畫布：空白處拖曳新增；點箭身選取或拖曳移動；拖曳兩端圓點調整；Delete 刪除；Escape 取消。">請使用支援 Canvas 的瀏覽器。</canvas><button class="extend up" disabled aria-label="向上延展畫布（尚未實作）">+</button><button class="extend right" disabled aria-label="向右延展畫布（尚未實作）">+</button><button class="extend down" disabled aria-label="向下延展畫布（尚未實作）">+</button><button class="extend left" disabled aria-label="向左延展畫布（尚未實作）">+</button></div></div>
 </main>
 <footer class="bottom-bar"><div class="document-controls"><div class="footer-control"><button id="zoom" aria-label="縮放比例" aria-expanded="false">100%<small>▾</small></button><div id="zoom-menu" class="bottom-menu" hidden aria-label="縮放選單"><button data-zoom="fit">符合視窗</button><button data-zoom="0.5">50%</button><button data-zoom="1">100%</button><button data-zoom="1.5">150%</button><button data-zoom="2">200%</button></div></div><input id="name" aria-label="文件名稱" value="空白" maxlength="100" spellcheck="false"/><div class="footer-control"><button id="format" aria-label="輸出格式" aria-expanded="false">.png<small>▾</small></button><div id="format-menu" class="bottom-menu" hidden aria-label="格式選單"><button aria-pressed="true">✓ PNG</button><button disabled>Skitch PNG</button><button disabled>JPG</button><button disabled>Skitch JPG</button><button disabled>PDF</button><button disabled>TIFF</button><button disabled>BMP</button></div></div></div>
 <button id="export" class="export-tray" draggable="true" aria-label="匯出或拖出 PNG" title="點一下匯出 PNG；也可拖出圖片"><span class="grip"></span><span class="png-file"><b>PNG</b></span><span class="grip"></span></button><span id="dimensions">1130 x 732</span></footer>
-<div id="notification" hidden><p id="status" role="status" aria-live="polite"></p><a id="download" hidden download="空白.png">再次下載 PNG</a><button id="close-notification" aria-label="關閉通知">×</button></div>
+<div id="notification" hidden><p id="status" role="status" aria-live="polite"></p><button id="undo-delete" hidden type="button">復原刪除</button><a id="download" hidden download="空白.png">再次下載 PNG</a><button id="close-notification" aria-label="關閉通知">×</button></div>
 <dialog id="export-dialog"><form id="export-form"><h2>匯出</h2><label>名稱：<input id="export-name" required maxlength="100" value="空白"/></label><label>格式：<select aria-label="匯出格式"><option>PNG</option></select></label><p>1130 × 732 像素</p><div class="dialog-actions"><button id="cancel-export" type="button">取消</button><button class="default" type="submit">匯出</button></div></form></dialog>
 <script type="module" src="/src/main.ts"></script>
 </body></html>

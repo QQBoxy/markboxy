@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { arrowPath, referenceArrow } from '../src/arrow.ts';
+import { arrowPath, expandedCanvas, referenceArrow } from '../src/arrow.ts';
 
 const numbers = (path: string) => [...path.matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]));
 
@@ -43,4 +43,23 @@ test('translation and quarter-turn rotate the complete outline without changing 
     assert.ok(Math.abs(rotated[i] - (900 - original[i + 1])) < 0.000002);
     assert.ok(Math.abs(rotated[i + 1] - (50 + original[i])) < 0.000002);
   }
+});
+
+test('canvas expands for the entire outline and rebases left/top overflow without clipping other arrows', () => {
+  assert.deepEqual(expandedCanvas(1130, 732, referenceArrow), { width: 1130, height: 732, offsetX: 0, offsetY: 0 });
+  const right = expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 1153, y: 670 } });
+  assert.equal(right.width, 1153);
+  assert.equal(right.height, 732);
+  const below = expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 460, y: 756 } });
+  assert.equal(below.height, 756);
+  const left = { ...referenceArrow, start: { x: -20, y: 100 }, end: { x: 200, y: 100 } };
+  const grown = expandedCanvas(1130, 732, left);
+  assert.ok(grown.offsetX > 20, 'include the curved tail beyond the start point');
+  assert.equal(grown.width, 1130 + grown.offsetX);
+  const shifted = { ...left, start: { x: left.start.x + grown.offsetX, y: 100 }, end: { x: left.end.x + grown.offsetX, y: 100 } };
+  assert.deepEqual(expandedCanvas(grown.width, grown.height, shifted), { ...grown, offsetX: 0 });
+  const above = expandedCanvas(1130, 732, { ...referenceArrow, start: { x: 100, y: -25 }, end: { x: 200, y: 100 } });
+  assert.ok(above.offsetY >= 25);
+  assert.equal(above.height, 732 + above.offsetY);
+  assert.throws(() => expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 5000, y: 200 } }), RangeError);
 });
