@@ -1,11 +1,11 @@
 import './style.css';
 import { desktop, nativeOpen, nativeCapture, nativeSave, askDiscard, desktopEvents } from './desktop.ts';
-import { referenceArrow, type Point } from './arrow.ts';
+import { type Point } from './arrow.ts';
 
-import { shapePath, shapeStroke, expandedScene, loadImage, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
+import { TOOL_SIZES, shapePath, shapeStroke, expandedScene, loadImage, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
 
 let background: Background | null = null;
-let tool: 'arrow' | 'rectangle' | 'ellipse' = 'arrow';
+let tool: NonNullable<Annotation['kind']> = 'arrow';
 let opening = 0;
 let crop: Crop | null = null;
 let cropDraft: Crop | null = null;
@@ -27,7 +27,7 @@ const exportName = document.querySelector<HTMLInputElement>('#export-name')!;
 const customColor = document.querySelector<HTMLInputElement>('#color')!;
 let arrows: Annotation[] = [];
 let selected: number | null = null;
-let style = { color: '#1e90ff', size: referenceArrow.size };
+let style: { color: string; size: number } = { color: '#ff2600', size: TOOL_SIZES[1] };
 let zoom = 1;
 let fit = true;
 let changed = false;
@@ -42,7 +42,6 @@ let drag: {
 } | null = null;
 
 function notice(message: string) {
-  document.querySelector<HTMLButtonElement>('#undo-delete')!.hidden = true;
   document.querySelector('#status')!.textContent = message;
   document.querySelector<HTMLElement>('#notification')!.hidden = false;
 }
@@ -65,7 +64,6 @@ function commit(before: Snapshot) {
   if (undo.length > 100) undo.shift();
   redo.length = 0;
   changed = true; revision++;
-  document.querySelector<HTMLButtonElement>('#undo-delete')!.hidden = true;
   invalidateDownload();
 }
 function view(): Crop { return (!cropDraft && crop) || { x: 0, y: 0, width, height }; }
@@ -90,6 +88,7 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
       ctx.strokeStyle = arrow.color;
       ctx.lineWidth = shapeStroke(arrow.size);
       ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
       ctx.stroke(path);
     } else ctx.fill(path);
     ctx.restore();
@@ -136,6 +135,13 @@ function refresh() {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-size]')) {
     button.setAttribute('aria-pressed', String(Math.abs(Number(button.dataset.size) - style.size) < .01));
   }
+  const distances = TOOL_SIZES.map(size => Math.abs(size - style.size));
+  const sizeIndex = distances.indexOf(Math.min(...distances));
+  const sizeToggle = document.querySelector<HTMLButtonElement>('#size-toggle')!;
+  sizeToggle.style.setProperty('--size-weight', String(sizeIndex + 1));
+  const sizeDescription = distances[sizeIndex]! < .01 ? `粗細第 ${sizeIndex + 1} 級` : `自訂粗細 ${style.size}`;
+  sizeToggle.title = sizeDescription;
+  sizeToggle.setAttribute('aria-description', sizeDescription);
   // Expose document state as an accessible description, also useful for keyboard users.
   canvas.setAttribute('aria-description', `${arrows.length} 個標註；${selected === null ? '未選取' : `選取第 ${selected + 1} 個標註`}。`);
   document.querySelector<HTMLButtonElement>('#trash')!.disabled = arrows.length === 0 && !background;
@@ -145,7 +151,8 @@ function refresh() {
     button.setAttribute('aria-pressed', String(active));
   }
   document.querySelector('#shape-tool')!.classList.toggle('selected', !cropDraft && tool !== 'arrow');
-  document.querySelector('#shape-tool use')!.setAttribute('href', tool === 'ellipse' ? '#i-ellipse' : '#i-shape');
+  document.querySelector('#shape-tool')!.setAttribute('aria-pressed', String(!cropDraft && tool !== 'arrow'));
+  document.querySelector('#shape-tool use')!.setAttribute('href', ({ arrow: '#i-shape', rectangle: '#i-shape', roundedRectangle: '#i-rounded', ellipse: '#i-ellipse', line: '#i-line' }[tool]));
   document.querySelector('#dimensions')!.textContent = `${view().width} x ${view().height}`;
   document.querySelector('#export-form p')!.textContent = `${view().width} × ${view().height} 像素`;
 }
@@ -202,17 +209,21 @@ document.addEventListener('pointerdown', event => {
   if (event.target instanceof Element && !event.target.closest('#arrow-menu')) arrowMenu.hidePopover();
   if (!(event.target instanceof Element) || !event.target.closest('.capture,.footer-control,#arrow-menu')) closeMenus();
 });
-document.querySelector('#shape-tool')!.addEventListener('click', () => setPanel('shape'));
+function selectTool(value: typeof tool) {
+  cancelDrag();
+  if (cropDraft) finishCrop(false);
+  tool = value;
+  selected = null;
+  if (!pinned) setPanel(null);
+  refresh();
+  canvas.focus();
+}
+document.querySelector('#shape-tool')!.addEventListener('click', () => {
+  selectTool(tool === 'arrow' ? 'rectangle' : tool);
+  setPanel('shape');
+});
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tool]')) {
-  button.addEventListener('click', () => {
-    cancelDrag();
-    if (cropDraft) finishCrop(false);
-    tool = button.dataset.tool as typeof tool;
-    selected = null;
-    if (!pinned) setPanel(null);
-    refresh();
-    canvas.focus();
-  });
+  button.addEventListener('click', () => selectTool(button.dataset.tool as typeof tool));
 }
 document.querySelector('#color-toggle')!.addEventListener('click', () => setPanel('color'));
 document.querySelector('#size-toggle')!.addEventListener('click', () => setPanel('size'));
@@ -271,13 +282,14 @@ function position(event: MouseEvent): Point {
   };
 }
 function handles(item: Annotation) {
-  return !item.kind || item.kind === 'arrow' ? [item.start, item.end] :
+  return !item.kind || item.kind === 'arrow' || item.kind === 'line' ? [item.start, item.end] :
     [item.start, item.end, { x: item.end.x, y: item.start.y }, { x: item.start.x, y: item.end.y }];
 }
 function hit(point: Point) {
   const ctx = canvas.getContext('2d')!;
   ctx.save();
   ctx.resetTransform();
+  ctx.lineCap = 'round';
   ctx.lineWidth = 8 / zoom;
   let result: number | null = null;
   for (let index = arrows.length - 1; index >= 0; index--) {
@@ -350,7 +362,7 @@ function move(event: PointerEvent) {
     const end = drag.target === 'new' ? 'end' : drag.target;
     if (event.shiftKey) {
       const anchor = end === 'end' ? arrow.start : end === 'ne' ? { x: arrow.start.x, y: arrow.end.y } : end === 'sw' ? { x: arrow.end.x, y: arrow.start.y } : arrow.end;
-      if (arrow.kind && arrow.kind !== 'arrow') {
+      if (arrow.kind && arrow.kind !== 'arrow' && arrow.kind !== 'line') {
         const side = Math.max(Math.abs(point.x - anchor.x), Math.abs(point.y - anchor.y));
         point = { x: anchor.x + Math.sign(point.x - anchor.x) * side, y: anchor.y + Math.sign(point.y - anchor.y) * side };
       } else {
@@ -419,7 +431,6 @@ function history(backwards: boolean) {
   restore(state);
   selected = null;
   changed = true; revision++;
-  document.querySelector<HTMLButtonElement>('#undo-delete')!.hidden = true;
   invalidateDownload();
   refresh();
 }
@@ -456,8 +467,7 @@ function deleteSelected() {
   selected = null;
   commit(before);
   refresh();
-  notice('已刪除選取的標註，其餘標註保留。');
-  document.querySelector<HTMLButtonElement>('#undo-delete')!.hidden = false;
+  document.querySelector<HTMLElement>('#notification')!.hidden = true;
 }
 function showArrowMenu(index: number, x: number, y: number) {
   selected = index;
@@ -488,10 +498,7 @@ document.querySelector('#delete-arrow')!.addEventListener('click', () => {
   deleteSelected();
   canvas.focus();
 });
-document.querySelector('#undo-delete')!.addEventListener('click', () => {
-  history(true);
-  document.querySelector<HTMLElement>('#notification')!.hidden = true;
-});
+
 
 const fileInput = document.querySelector<HTMLInputElement>('#open-file')!;
 async function chooseFile() {
@@ -520,6 +527,14 @@ async function openFile(file: File) {
     notice(loaded ? '已開啟可編輯文件，圖片與標註均已還原。' : '已開啟圖片，所有編輯都在本機處理。');
   } catch (error) { if (request === opening) notice(error instanceof Error ? error.message : '無法開啟圖片，原文件仍保留。'); }
 }
+document.addEventListener('paste', event => {
+  if (textClipboardTarget(event.target)) return;
+  const files = Array.from(event.clipboardData?.files ?? []);
+  const image = files.find(file => file.type.startsWith('image/'));
+  if (!image) return;
+  event.preventDefault();
+  void openFile(image);
+});
 fileInput.addEventListener('change', () => { const file = fileInput.files?.[0]; fileInput.value = ''; if (file) void openFile(file); });
 workspace.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
 workspace.addEventListener('drop', event => {
@@ -564,11 +579,28 @@ function exportPNG() {
 function filename(value = name.value, extension = format === 'jpeg' ? 'jpg' : 'png') {
   return `${value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\.(png|jpg|jpeg|markboxy)$/i, '') || '空白'}.${extension}`;
 }
-async function exportImage() {
+async function exportImage(outputFormat: typeof format = format) {
+  if (cropDraft) throw new Error('請先套用或取消裁切。');
   const output = document.createElement('canvas'); output.width = view().width; output.height = view().height; drawScene(output);
   const quality = Number(document.querySelector<HTMLInputElement>('#quality')!.value) / 100;
-  return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片。')), `image/${format}`, quality));
+  return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片。')), `image/${outputFormat}`, quality));
 }
+async function copyImage() {
+  cancelDrag(); closeMenus();
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('目前環境不支援圖片剪貼簿，請使用匯出圖片。');
+    // Pass the Blob promise immediately to retain Safari/WebKit's user activation.
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': exportImage('png') })]);
+    notice('已複製圖片，可貼到其他軟體；圖片不包含選取控制點。');
+  } catch (error) { notice(`複製失敗：${error instanceof Error ? error.message : String(error)}`); }
+}
+function textClipboardTarget(target: EventTarget | null) {
+  return dialog.open || (target instanceof Element && !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])'));
+}
+document.addEventListener('copy', event => {
+  if (textClipboardTarget(event.target) || getSelection()?.toString()) return;
+  event.preventDefault(); void copyImage();
+});
 function offerDownload(blob: Blob, filename: string) {
   invalidateDownload(); download.href = URL.createObjectURL(blob); download.download = filename; download.textContent = '再次下載'; download.hidden = false; download.click();
 }
@@ -631,6 +663,10 @@ document.addEventListener('keydown', event => {
   if ((event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) && !(command && ['s', 'o', 'e'].includes(event.key.toLowerCase()))) return;
   const active = document.activeElement;
   if (!active?.closest('main,footer,header')) return;
+  if (command && event.key.toLowerCase() === 'c') {
+    if (!getSelection()?.toString()) { event.preventDefault(); void copyImage(); }
+    return;
+  }
   if (command && event.key.toLowerCase() === 's') { event.preventDefault(); saveProject(); return; }
   if (command && event.key.toLowerCase() === 'o') { event.preventDefault(); void chooseFile(); return; }
   if (command && ['z', 'y'].includes(event.key.toLowerCase())) {

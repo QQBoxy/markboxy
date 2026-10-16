@@ -1,6 +1,6 @@
 import { arrowPath, expandedCanvas, type Arrow } from './arrow.ts';
 
-export type Annotation = Arrow & { kind?: 'arrow' | 'rectangle' | 'ellipse' };
+export type Annotation = Arrow & { kind?: 'arrow' | 'rectangle' | 'roundedRectangle' | 'ellipse' | 'line' };
 export type Background = { src: string; image: HTMLImageElement; x: number; y: number; width: number; height: number };
 export const MAX_SIDE = 4096;
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -21,8 +21,14 @@ export function shapePath(item: Annotation): string {
   const { start: a, end: b } = item;
   if (![a.x, a.y, b.x, b.y, item.size].every(Number.isFinite) || item.size <= 0) throw new RangeError('無效的圖形座標。');
   const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(a.x - b.x), h = Math.abs(a.y - b.y);
+  if (item.kind === 'line') return Math.hypot(w, h) < .01 ? '' : `M${a.x},${a.y}L${b.x},${b.y}`;
   if (w < .01 || h < .01) return '';
   if (item.kind === 'rectangle') return `M${x},${y}h${w}v${h}h${-w}Z`;
+  if (item.kind === 'roundedRectangle') {
+    // ponytail: fixed 12px radius clamped to the box; revisit with measured original corner samples.
+    const r = Math.min(12, w / 2, h / 2);
+    return `M${x+r},${y}h${w-2*r}a${r},${r} 0 0 1 ${r},${r}v${h-2*r}a${r},${r} 0 0 1 ${-r},${r}h${2*r-w}a${r},${r} 0 0 1 ${-r},${-r}v${2*r-h}a${r},${r} 0 0 1 ${r},${-r}Z`;
+  }
   return `M${x},${y + h / 2}a${w / 2},${h / 2} 0 1 0 ${w},0a${w / 2},${h / 2} 0 1 0 ${-w},0Z`;
 }
 export function expandedScene(width: number, height: number, item: Annotation) {
@@ -110,7 +116,7 @@ export function validateProject(value: unknown): Project {
   if (!Array.isArray(p.annotations) || p.annotations.length > 500) fail();
   const annotations = (p.annotations as unknown[]).map(v => {
     const a = object(v), s = object(a.start), e = object(a.end);
-    if (a.kind !== undefined && !['arrow', 'rectangle', 'ellipse'].includes(String(a.kind))) fail();
+    if (a.kind !== undefined && !['arrow', 'rectangle', 'roundedRectangle', 'ellipse', 'line'].includes(String(a.kind))) fail();
     if (typeof a.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(a.color)) fail();
     const item: Annotation = { kind: a.kind as Annotation['kind'], color: a.color as string, size: number(a.size, 1, 100), start: { x: number(s.x, -MAX_SIDE, MAX_SIDE * 2), y: number(s.y, -MAX_SIDE, MAX_SIDE * 2) }, end: { x: number(e.x, -MAX_SIDE, MAX_SIDE * 2), y: number(e.y, -MAX_SIDE, MAX_SIDE * 2) } };
     if (!shapePath(item)) fail();

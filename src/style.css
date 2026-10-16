@@ -38,7 +38,7 @@ main{display:flex;min-width:0;min-height:0;position:relative}
 .rail-divider{height:28px;position:relative}
 .rail-divider:before{content:"";position:absolute;top:12px;left:0;right:0;border-top:1px solid #fff;border-bottom:1px solid #dce0e1}
 .swatch{display:block;width:23px;height:23px;border:1px solid #aaa;border-radius:50%;background:#fff;box-shadow:0 0 1px #888;position:relative}
-.swatch:before{content:"";position:absolute;inset:4px;border-radius:50%;background:var(--swatch,#1e90ff)}
+.swatch:before{content:"";position:absolute;inset:4px;border-radius:50%;background:var(--swatch,#ff2600)}
 .palette [aria-pressed=true] .swatch{border:2px solid #777}
 .palette [aria-pressed=true] .swatch:before{inset:3px}
 .pin{color:#aaa}
@@ -47,7 +47,7 @@ main{display:flex;min-width:0;min-height:0;position:relative}
 .size-gap{height:40px}
 .size-stroke{width:14px;height:var(--weight);background:#6d7070;transform:rotate(-45deg)}
 .palette [data-size][aria-pressed=true]{color:#555}
-.palette [data-size][aria-pressed=true]:not(:last-child):before{content:"";position:absolute;width:25px;height:25px;border:1px solid #a8abad;border-radius:50%;background:#fff}
+.palette [data-size][aria-pressed=true]:before{content:"";position:absolute;width:25px;height:25px;border:1px solid #a8abad;border-radius:50%;background:#fff}
 .size-stroke{position:relative}
 .custom-color{cursor:pointer}
 .custom-color input{opacity:0;position:absolute;inset:8px;width:24px;height:24px;cursor:pointer}
@@ -109,7 +109,6 @@ dialog p{font-size:11px;color:#777;text-align:right}
 #arrow-menu{position:fixed;inset:auto;margin:0;padding:4px;border:1px solid #c9ced0;border-radius:6px;background:#fff;box-shadow:0 2px 8px #0002;color:#52585b}
 #arrow-menu button{display:block;min-width:96px;min-height:44px;padding:0 16px;text-align:left;border-radius:3px}
 #arrow-menu button:hover{background:#1687fa;color:white;filter:none}
-#undo-delete{margin-top:8px;min-height:36px;color:#1671ad;text-decoration:underline}
 @media (pointer:coarse),(max-width:600px){#name{font-size:16px;min-width:36px}dialog input,dialog select{font-size:16px}.footer-control>button{min-height:32px}.top-actions button{min-width:32px;min-height:40px}}
 #crop-bar{position:absolute;left:56px;right:0;top:0;height:56px;z-index:3;background:#fff;display:flex;align-items:center;padding:0 18px;color:#777}
 .crop-dimensions{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px}

@@ -38,3 +38,18 @@ test('five shape stroke widths match the native exports', () => {
   const expected = [1.1221449851042702, 3.3664349553128106, 7.855014895729891, 16.832174776564052, 34.786494538232375];
   TOOL_SIZES.forEach((size, i) => assert.ok(Math.abs(shapeStroke(size) - expected[i]!) < 1e-10));
 });
+
+test('rounded boxes and horizontal/vertical lines remain editable through project round trip', async () => {
+  const { readProject } = await import('../src/document.ts');
+  const base = { start: { x: 10, y: 10 }, end: { x: 90, y: 70 }, size: TOOL_SIZES[1], color: '#ff2600' };
+  const rounded = { ...base, kind: 'roundedRectangle' as const };
+  assert.match(shapePath(rounded), /a12,12/);
+  assert.equal(shapePath({ ...rounded, start: rounded.end, end: rounded.start }), shapePath(rounded));
+  assert.match(shapePath({ ...rounded, end: { x: 18, y: 14 } }), /a2,2/);
+  const horizontal = { ...base, kind: 'line' as const, end: { x: 90, y: 10 } };
+  const vertical = { ...horizontal, end: { x: 10, y: 70 } };
+  assert.notEqual(shapePath(horizontal), ''); assert.notEqual(shapePath(vertical), '');
+  assert.equal(shapePath({ ...horizontal, end: horizontal.start }), '');
+  const project = { format: 'markboxy', version: 2, name: '四種圖形', width: 100, height: 100, crop: null, background: null, annotations: [rounded, horizontal, vertical] };
+  assert.deepEqual((await readProject(new Blob([JSON.stringify(project)]))).project, project);
+});

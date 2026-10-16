@@ -19,7 +19,8 @@ export async function checkLongPress(tab) {
   assert.equal(await menu.isVisible(), true, 'hold opens delete menu');
   await tab.playwright.getByRole('button', { name: '刪除', exact: true }).click();
   assert.match(await state(), /^1 個標註/, 'delete only one arrow');
-  await tab.playwright.getByRole('button', { name: '復原刪除', exact: true }).click();
+  assert.equal(await tab.playwright.locator('#notification').isVisible(), false, 'delete is silent');
+  await tab.playwright.locator('#canvas').press('Meta+z');
   assert.match(await state(), /^2 個標註/, 'undo restores deleted arrow');
   await tab.drag(body, [body[0] + 10, body[1] + 20]);
   assert.equal(await menu.isVisible(), false, 'drag cancels hold');
@@ -59,9 +60,24 @@ export async function checkCropDimensions(tab) {
 export async function checkStartup(tab) {
   assert.match(await tab.playwright.locator('#canvas').getAttribute('aria-description'), /^0 個標註/);
   assert.equal(await tab.playwright.locator('.account,.app-title').count(), 0);
+  assert.equal(await tab.playwright.locator('[data-color="#ff2600"]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await tab.playwright.locator('[data-size="17.954319761668323"]').getAttribute('aria-pressed'), 'true');
   assert.equal(await tab.playwright.locator('.topbar').evaluate(el => el.getBoundingClientRect().top), 0);
   await tab.playwright.locator('#format').click();
   assert.equal(JSON.stringify((await tab.playwright.locator('#format-menu button').allTextContents()).map(t => t.replace('✓', '').trim())), '["PNG","JPG"]');
   await tab.playwright.locator('#format').click();
   assert.equal(JSON.stringify(await tab.playwright.locator('#export-format option').allTextContents()), '["PNG","JPG"]');
+}
+
+export async function checkCopyImage(tab) {
+  const dimensions = (await tab.playwright.locator('#dimensions').textContent()).split(' x ').map(Number);
+  await tab.playwright.locator('#canvas').press('Meta+c');
+  await tab.playwright.getByText('已複製圖片，可貼到其他軟體；圖片不包含選取控制點。', { exact: true }).waitFor({ state: 'visible' });
+  const items = await tab.clipboard.read();
+  const png = items.flatMap(item => item.entries).find(entry => entry.mimeType === 'image/png');
+  assert.ok(png?.base64, 'clipboard contains actual PNG bytes');
+  const bytes = Buffer.from(png.base64, 'base64');
+  assert.equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(bytes.readUInt32BE(16), dimensions[0]);
+  assert.equal(bytes.readUInt32BE(20), dimensions[1]);
 }
