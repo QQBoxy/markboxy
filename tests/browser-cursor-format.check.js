@@ -33,10 +33,11 @@ export async function checkCursorAndFormat(tab) {
   for (const [format, label] of [['jpeg', 'JPG'], ['png', 'PNG'], ['jpeg', 'JPG']]) {
     await tab.playwright.locator('#format').click();
     await tab.playwright.locator(`[data-format="${format}"]`).click();
-    assert.equal(await tab.playwright.locator('#format-menu [aria-pressed="true"]').textContent(), `✓ ${label}`);
-    const labels = await tab.playwright.locator('[data-format]').allTextContents();
-    assert.equal(labels.filter(text => text.includes('✓')).length, 1);
-    assert.equal(await tab.playwright.locator('#format').textContent(), `.${label.toLowerCase()}▾`);
+    assert.equal(await tab.playwright.locator('#format-menu [aria-pressed="true"]').textContent(), label);
+    assert.equal(await tab.playwright.locator('#format-menu [aria-pressed="true"]').count(), 1);
+    assert.equal(await tab.playwright.locator('#format-menu [aria-pressed="true"] svg').evaluate(el => getComputedStyle(el).visibility), 'visible');
+    assert.equal(await tab.playwright.locator('#format-menu [aria-pressed="false"] svg').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    assert.equal(await tab.playwright.locator('#format').textContent(), `.${label.toLowerCase()}`);
     assert.equal(await tab.playwright.locator('#export .png-file b').textContent(), label);
     await tab.playwright.locator('#export').click();
     assert.equal(await tab.playwright.locator('#export-format').evaluate(el => el.value), format);
@@ -46,6 +47,6 @@ export async function checkCursorAndFormat(tab) {
   await tab.playwright.locator('#export').click();
   await tab.playwright.locator('#export-format').selectOption('png');
   await tab.playwright.locator('#cancel-export').click();
-  assert.equal(await tab.playwright.locator('[data-format="png"]').textContent(), '✓ PNG');
+  assert.equal(await tab.playwright.locator('[data-format="png"]').textContent(), 'PNG');
   await tab.playwright.locator('#format').click();
 }

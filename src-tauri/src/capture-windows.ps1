@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$OutputPath)
+param([Parameter(Mandatory=$true)][string]$OutputPath, [switch]$FullScreen)
 $ErrorActionPreference = 'Stop'
 # Use physical desktop pixels, including displays with negative origins and mixed DPI.
 Add-Type @'
@@ -13,7 +13,8 @@ public static class CaptureDpi {
 if ([CaptureDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) -eq [IntPtr]::Zero) { throw 'Cannot enter physical pixel DPI mode. Use the system capture tool and import the image.' }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-$desktop = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$desktop = if ($FullScreen) { [System.Windows.Forms.Screen]::PrimaryScreen.Bounds } else { [System.Windows.Forms.SystemInformation]::VirtualScreen }
+if ($FullScreen -and ($desktop.Width -gt 4096 -or $desktop.Height -gt 4096)) { throw 'Primary display exceeds the 4096 x 4096 image limit. Use region capture instead.' }
 if ([long]$desktop.Width * $desktop.Height -gt 64000000) { throw 'Desktop exceeds capture memory limit. Use the system capture tool and import a smaller image.' }
 $bitmap = New-Object System.Drawing.Bitmap($desktop.Width, $desktop.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -21,6 +22,10 @@ $form = $null
 try {
   $graphics.CopyFromScreen($desktop.Left, $desktop.Top, 0, 0, $desktop.Size)
   $graphics.Dispose(); $graphics = $null
+  if ($FullScreen) {
+    $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    return
+  }
   $form = New-Object System.Windows.Forms.Form
   $form.FormBorderStyle = 'None'
   $form.StartPosition = 'Manual'

@@ -1,8 +1,7 @@
-import './style.css';
 import { desktop, nativeOpen, nativeCapture, nativeSave, askDiscard, desktopEvents } from './desktop.ts';
-import { type Point } from './arrow.ts';
+import { arrowPath, type Point } from './arrow.ts';
 
-import { TOOL_SIZES, shapePath, shapeStroke, expandedScene, loadImage, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
+import { TOOL_SIZES, readStylePreference, shapePath, shapeStroke, expandedScene, loadImage, isInk, inkAlpha, textSize, textFont, textLines, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
 
 let background: Background | null = null;
 let tool: NonNullable<Annotation['kind']> = 'arrow';
@@ -16,12 +15,14 @@ let width = 1130;
 let height = 732;
 type Snapshot = { width: number; height: number; background: Background | null; arrows: Annotation[]; crop: Crop | null; name: string };
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
-const toolIcons = { arrow: 'arrow', rectangle: 'shape', roundedRectangle: 'rounded', ellipse: 'ellipse', line: 'line', crop: 'crop' };
+document.querySelector('#i-arrow path')!.setAttribute('d', arrowPath({ start: { x: 70, y: 250 }, end: { x: 250, y: 70 }, size: 52 }));
+const toolIcons = { arrow: 'arrow', rectangle: 'shape', roundedRectangle: 'rounded', ellipse: 'ellipse', line: 'line', crop: 'crop', text: 'text', pen: 'pen', highlighter: 'highlighter' };
 const toolCursors = Object.fromEntries(Object.entries(toolIcons).map(([kind, icon]) => {
   const shape = document.querySelector(`#i-${icon}`)!.innerHTML;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M1 28h14M8 21v14" fill="none" stroke="white" stroke-width="3"/><path d="M1 28h14M8 21v14" fill="none" stroke="black"/><svg x="17" y="2" width="22" height="22" viewBox="0 0 32 32" color="TOOL_COLOR">${shape}</svg></svg>`;
   return [kind, `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 28, crosshair`];
 }));
+const textToolPath = new Path2D(document.querySelector('#i-text path')!.getAttribute('d')!);
 const arrowMenu = document.querySelector<HTMLElement>('#arrow-menu')!;
 let holdTimer: ReturnType<typeof setTimeout> | undefined;
 const workspace = document.querySelector<HTMLElement>('#workspace')!;
@@ -33,19 +34,44 @@ const exportName = document.querySelector<HTMLInputElement>('#export-name')!;
 const customColor = document.querySelector<HTMLInputElement>('#color')!;
 let arrows: Annotation[] = [];
 let selected: number | null = null;
-let style: { color: string; size: number } = { color: '#ff2600', size: TOOL_SIZES[1] };
+const stylePreferenceKey = 'markboxy.tool-style.v1';
+function loadStylePreference() {
+  try {
+    const stored = localStorage.getItem(stylePreferenceKey), preference = readStylePreference(stored);
+    if (stored !== null && stored !== JSON.stringify(preference)) {
+      try { localStorage.setItem(stylePreferenceKey, JSON.stringify(preference)); }
+      catch { /* Reading preferences still works when migration cannot be written. */ }
+    }
+    return preference;
+  }
+  catch { return readStylePreference(null); }
+}
+let preferredStyle = loadStylePreference();
+let style: { color: string; size: number } = { color: preferredStyle.color, size: TOOL_SIZES[preferredStyle.sizeLevel - 1]! };
+const presetColors = new Set(Array.from(document.querySelectorAll<HTMLButtonElement>('[data-color]'), button => button.dataset.color!));
+let customColorSelected = preferredStyle.customColor === true || !presetColors.has(style.color);
+function useAnnotationStyle(item: Annotation) {
+  style = { color: item.color.toLowerCase(), size: item.size };
+  customColorSelected = !presetColors.has(style.color);
+}
 let zoom = 1;
 let fit = true;
 let changed = false;
 let revision = 0;
-let panel: 'color' | 'size' | 'shape' | null = null;
+let panel: 'color' | 'size' | 'shape' | 'pen' | null = null;
 let pinned = false;
 const undo: Snapshot[] = [];
 const redo: Snapshot[] = [];
 let drag: {
-  pointerId: number; target: 'new' | 'move' | 'start' | 'end' | 'ne' | 'sw'; index: number;
+  pointerId: number; target: 'new' | 'move' | 'start' | 'end' | 'ne' | 'sw' | 'ink'; index: number;
   origin: Point; before: Snapshot; previousSelection: number | null; moved: boolean;
 } | null = null;
+const textEditor = document.querySelector<HTMLTextAreaElement>('#text-editor')!;
+let editingText: { index: number; before: Snapshot } | null = null;
+let wet: { index: number; before: Snapshot; ended: number | null } | null = null;
+let wetTimer: ReturnType<typeof setTimeout> | undefined;
+let wetFrame = 0;
+let savedState = snapshot();
 
 function notice(message: string) {
   document.querySelector('#status')!.textContent = message;
@@ -57,6 +83,10 @@ function invalidateDownload() {
   download.removeAttribute('href');
 }
 function snapshot(): Snapshot { return { width, height, background, arrows: structuredClone(arrows), crop: crop && { ...crop }, name: name.value }; }
+function matches(state: Snapshot) {
+  return state.width === width && state.height === height && state.background === background && state.name === name.value && JSON.stringify(state.crop) === JSON.stringify(crop) && JSON.stringify(state.arrows) === JSON.stringify(arrows);
+}
+function hasUnsavedChanges() { return changed && !matches(savedState); }
 function restore(state: Snapshot) {
   ({ width, height, background, arrows, crop } = state);
   name.value = state.name;
@@ -64,7 +94,7 @@ function restore(state: Snapshot) {
   layout();
 }
 function commit(before: Snapshot) {
-  if (before.width === width && before.height === height && before.background === background && before.name === name.value && JSON.stringify(before.crop) === JSON.stringify(crop) && JSON.stringify(before.arrows) === JSON.stringify(arrows)) return;
+  if (matches(before)) return;
   // ponytail: 100 annotation snapshots share immutable image data; opening a new image drops older history to bound decoded-image memory.
   undo.push(before);
   if (undo.length > 100) undo.shift();
@@ -72,6 +102,90 @@ function commit(before: Snapshot) {
   changed = true; revision++;
   invalidateDownload();
 }
+function finishWetInk() {
+  clearTimeout(wetTimer); cancelAnimationFrame(wetFrame);
+  if (!wet) return;
+  const before = wet.before;
+  wet = null;
+  commit(before); refresh();
+}
+function animateInk() {
+  refresh();
+  if (wet?.ended !== null && wet) wetFrame = requestAnimationFrame(animateInk);
+}
+function updateTextGeometry(item: Annotation) {
+  const ctx = canvas.getContext('2d')!;
+  ctx.save(); ctx.font = textFont(item);
+  item.end.y = item.start.y + 8 + textLines(item, s => ctx.measureText(s).width).length * (item.fontSize ?? textSize(item.size)) * 1.4;
+  ctx.restore();
+}
+function placeTextEditor() {
+  if (!editingText) return;
+  const item = arrows[editingText.index]!, area = view();
+  Object.assign(textEditor.style, {
+    left: `${(item.start.x - area.x) * zoom}px`, top: `${(item.start.y - area.y) * zoom}px`,
+    width: `${item.end.x - item.start.x}px`, height: `${item.end.y - item.start.y}px`,
+    font: textFont(item), lineHeight: '1.4', transform: `scale(${zoom})`,
+  });
+}
+function finishText(cancel = false) {
+  if (!editingText) return true;
+  const { index, before } = editingText;
+  editingText = null; textEditor.hidden = true;
+  const item = arrows[index]!;
+  if (cancel) { selected = null; restore(before); }
+  else {
+    try {
+      if (!item.text?.trim()) { arrows.splice(index, 1); selected = null; }
+      else { updateTextGeometry(item); expandFor(item); selected = index; }
+      commit(before);
+    } catch (error) {
+      // Keep the draft editable when it exceeds canvas limits, so typed content is not lost.
+      editingText = { index, before }; selected = index; textEditor.hidden = false;
+      notice(`${String(error)} 請縮短文字或調整位置；輸入內容仍保留。`); refresh(); textEditor.focus(); return false;
+    }
+  }
+  refresh();
+  return true;
+}
+function beginText(point: Point, index: number | null = null) {
+  if (!finishText()) return;
+  finishWetInk();
+  if (index === null && arrows.length >= 500) { notice('目前文件最多容納 500 個標註。'); return; }
+  const before = snapshot();
+  if (index === null) {
+    arrows.push({ kind: 'text', start: point, end: { x: point.x + 240, y: point.y + 40 }, ...style, text: '', fontSize: textSize(style.size) });
+    index = arrows.length - 1;
+  }
+  selected = index;
+  const item = arrows[index]!;
+  useAnnotationStyle(item);
+  editingText = { index, before };
+  textEditor.value = item.text ?? '';
+  updateTextGeometry(item);
+  textEditor.hidden = false;
+  refresh(); textEditor.focus();
+}
+textEditor.addEventListener('input', () => {
+  if (!editingText) return;
+  const item = arrows[editingText.index]!;
+  item.text = textEditor.value;
+  updateTextGeometry(item);
+  changed = true; revision++; invalidateDownload(); refresh();
+});
+textEditor.addEventListener('keydown', event => {
+  if (event.isComposing) return;
+  if (event.key === 'Escape' || ((event.metaKey || event.ctrlKey) && event.key === 'Enter')) {
+    event.preventDefault(); event.stopPropagation(); if (finishText(event.key === 'Escape')) canvas.focus();
+  }
+});
+document.addEventListener('pointerdown', event => {
+  if (editingText && event.target instanceof Element && !event.target.closest('#text-editor,.rail') && !finishText()) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
+canvas.addEventListener('dblclick', event => {
+  const index = hit(position(event));
+  if (index !== null && arrows[index]!.kind === 'text') { cancelDrag(); beginText(position(event), index); }
+});
 function view(): Crop { return (!cropDraft && crop) || { x: 0, y: 0, width, height }; }
 function drawScene(target: HTMLCanvasElement, editing = false) {
   const ctx = target.getContext('2d');
@@ -90,9 +204,22 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
     ctx.shadowColor = 'rgba(0,0,0,0.35)';
     ctx.shadowBlur = 2 * scale;
     ctx.shadowOffsetY = 2 * scale;
-    if (arrow.kind && arrow.kind !== 'arrow') {
+    if (arrow.kind === 'text') {
+      const fontSize = arrow.fontSize ?? textSize(arrow.size);
+      ctx.font = textFont(arrow); ctx.textBaseline = 'alphabetic';
+      ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, fontSize * .1);
+      const lines = textLines(arrow, s => ctx.measureText(s).width);
+      lines.forEach((line, i) => {
+        const x = arrow.start.x + 8, y = arrow.start.y + 4 + fontSize * 1.1 + i * fontSize * 1.4;
+        ctx.strokeText(line, x, y); ctx.fillText(line, x, y);
+      });
+    } else if (arrow.kind && arrow.kind !== 'arrow') {
+      if (isInk(arrow)) {
+        ctx.shadowColor = 'transparent';
+        ctx.globalAlpha = arrow.kind === 'highlighter' ? .4 : editing && wet?.index === index ? (wet.ended === null ? .25 : inkAlpha(performance.now() - wet.ended)) : 1;
+      }
       ctx.strokeStyle = arrow.color;
-      ctx.lineWidth = shapeStroke(arrow.size);
+      ctx.lineWidth = shapeStroke(arrow.size) * (arrow.kind === 'highlighter' ? 2 : 1);
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.stroke(path);
@@ -102,12 +229,18 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
       ctx.strokeStyle = '#71d8e9';
       ctx.lineWidth = 1 / zoom;
       ctx.stroke(path);
-      for (const p of handles(arrow)) {
+      if (arrow.kind === 'text') {
+        const x = (arrow.start.x + arrow.end.x) / 2, y = arrow.start.y - 18 / zoom;
+        ctx.beginPath(); ctx.arc(x, y, 12 / zoom, 0, Math.PI * 2); ctx.fillStyle = '#21aece'; ctx.fill();
+        ctx.save(); ctx.translate(x - 9 / zoom, y - 9 / zoom); ctx.scale(18 / (32 * zoom), 18 / (32 * zoom));
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.25; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke(textToolPath); ctx.restore();
+      }
+      for (const [i, p] of handles(arrow).entries()) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, 6.5 / zoom, 0, Math.PI * 2);
-        ctx.fillStyle = '#21aece';
+        ctx.fillStyle = arrow.kind === 'text' && i < 2 ? '#fff' : '#21aece';
         ctx.fill();
-        ctx.strokeStyle = '#fff';
+        ctx.strokeStyle = arrow.kind === 'text' && i < 2 ? '#21aece' : '#fff';
         ctx.lineWidth = 1.5 / zoom;
         ctx.stroke();
       }
@@ -133,13 +266,16 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
 }
 function refresh() {
   drawScene(canvas, true);
+  placeTextEditor();
   canvas.style.setProperty('--tool-cursor', toolCursors[cropDraft ? 'crop' : tool]!.replace('TOOL_COLOR', encodeURIComponent(style.color)));
   canvas.style.cursor = 'var(--tool-cursor)';
   document.querySelector<HTMLElement>('#current-color')!.style.setProperty('--swatch', style.color);
   customColor.value = style.color;
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-color]')) {
-    button.setAttribute('aria-pressed', String(button.dataset.color === style.color));
+    button.setAttribute('aria-pressed', String(!customColorSelected && button.dataset.color === style.color));
   }
+  document.querySelector('.custom-color')!.classList.toggle('selected-color', customColorSelected);
+  customColor.setAttribute('aria-description', customColorSelected ? '目前選取自訂色彩' : '選擇自訂色彩');
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-size]')) {
     button.setAttribute('aria-pressed', String(Math.abs(Number(button.dataset.size) - style.size) < .01));
   }
@@ -158,9 +294,16 @@ function refresh() {
     button.classList.toggle('selected', active);
     button.setAttribute('aria-pressed', String(active));
   }
-  document.querySelector('#shape-tool')!.classList.toggle('selected', !cropDraft && tool !== 'arrow');
-  document.querySelector('#shape-tool')!.setAttribute('aria-pressed', String(!cropDraft && tool !== 'arrow'));
-  document.querySelector('#shape-tool use')!.setAttribute('href', ({ arrow: '#i-shape', rectangle: '#i-shape', roundedRectangle: '#i-rounded', ellipse: '#i-ellipse', line: '#i-line' }[tool]));
+  const shapeIcons: Partial<Record<typeof tool, string>> = { rectangle: '#i-shape', roundedRectangle: '#i-rounded', ellipse: '#i-ellipse', line: '#i-line' };
+  const shapeIcon = shapeIcons[tool];
+  document.querySelector('#shape-tool')!.classList.toggle('selected', !cropDraft && !!shapeIcon);
+  document.querySelector('#shape-tool')!.setAttribute('aria-pressed', String(!cropDraft && !!shapeIcon));
+  document.querySelector('#shape-tool use')!.setAttribute('href', shapeIcon ?? '#i-shape');
+  const penActive = !cropDraft && (tool === 'pen' || tool === 'highlighter');
+  document.querySelector('#pen-tool')!.classList.toggle('selected', penActive);
+  document.querySelector('#pen-tool')!.setAttribute('aria-pressed', String(penActive));
+  document.querySelector('#pen-tool use')!.setAttribute('href', tool === 'highlighter' ? '#i-highlighter' : '#i-pen');
+  canvas.dataset.ink = wet ? wet.ended === null ? 'writing' : 'drying' : 'dry';
   document.querySelector('#dimensions')!.textContent = `${view().width} x ${view().height}`;
   document.querySelector('#export-form p')!.textContent = `${view().width} × ${view().height} 像素`;
 }
@@ -178,7 +321,7 @@ function layout() {
   const ratio = Math.min(devicePixelRatio, 2, 4096 / (Math.max(area.width, area.height) * zoom));
   canvas.width = Math.max(1, Math.round(area.width * zoom * ratio));
   canvas.height = Math.max(1, Math.round(area.height * zoom * ratio));
-  document.querySelector('#zoom')!.innerHTML = `${Math.round(zoom * 100)}%<small>▾</small>`;
+  document.querySelector('#zoom')!.innerHTML = `${Math.round(zoom * 100)}%<svg class="chevron" aria-hidden="true"><use href="#i-chevron"/></svg>`;
   refresh();
 }
 new ResizeObserver(layout).observe(workspace);
@@ -189,6 +332,8 @@ function setPanel(value: typeof panel) {
   document.querySelector<HTMLElement>('#color-panel')!.hidden = value !== 'color';
   document.querySelector<HTMLElement>('#size-panel')!.hidden = value !== 'size';
   document.querySelector<HTMLElement>('#shape-panel')!.hidden = value !== 'shape';
+  document.querySelector<HTMLElement>('#pen-panel')!.hidden = value !== 'pen';
+  document.querySelector('#pen-tool')!.setAttribute('aria-expanded', String(value === 'pen'));
   document.querySelector('#shape-tool')!.setAttribute('aria-expanded', String(value === 'shape'));
   document.querySelector('#color-toggle')!.setAttribute('aria-expanded', String(value === 'color'));
   document.querySelector('#size-toggle')!.setAttribute('aria-expanded', String(value === 'size'));
@@ -214,11 +359,14 @@ for (const id of ['capture', 'zoom', 'format']) {
   });
 }
 document.addEventListener('pointerdown', event => {
+  delete canvas.dataset.tabFocus;
   if (event.target instanceof Element && !event.target.closest('#arrow-menu')) arrowMenu.hidePopover();
   if (!(event.target instanceof Element) || !event.target.closest('.capture,.footer-control,#arrow-menu')) closeMenus();
 });
 function selectTool(value: typeof tool) {
   cancelDrag();
+  if (!finishText()) return;
+  finishWetInk();
   if (cropDraft) finishCrop(false);
   tool = value;
   selected = null;
@@ -227,8 +375,11 @@ function selectTool(value: typeof tool) {
   canvas.focus();
 }
 document.querySelector('#shape-tool')!.addEventListener('click', () => {
-  selectTool(tool === 'arrow' ? 'rectangle' : tool);
+  selectTool(['rectangle', 'roundedRectangle', 'ellipse', 'line'].includes(tool) ? tool : 'rectangle');
   setPanel('shape');
+});
+document.querySelector('#pen-tool')!.addEventListener('click', () => {
+  selectTool(tool === 'highlighter' ? 'highlighter' : 'pen'); setPanel('pen');
 });
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tool]')) {
   button.addEventListener('click', () => selectTool(button.dataset.tool as typeof tool));
@@ -256,29 +407,41 @@ function expandFor(item: Annotation) {
     workspace.scrollTop += Math.max(expanded.offsetY, height - previousHeight) * zoom;
   }
 }
-function setStyle(value: Partial<typeof style>) {
-  const before = snapshot(), previousStyle = style;
+function setStyle(value: Partial<typeof style>, sizeLevel?: number, customColorChoice?: boolean) {
+  if (!finishText()) return;
+  finishWetInk();
+  const before = snapshot(), previousStyle = style, previousCustomColor = customColorSelected;
   style = { ...style, ...value };
+  if (customColorChoice !== undefined) customColorSelected = customColorChoice;
   if (selected !== null) {
     try {
       Object.assign(arrows[selected]!, value);
+      if (arrows[selected]!.kind === 'text') {
+        if (value.size !== undefined) arrows[selected]!.fontSize = textSize(value.size);
+        updateTextGeometry(arrows[selected]!);
+      }
       expandFor(arrows[selected]!);
       commit(before);
     } catch (error) {
-      style = previousStyle; restore(before);
+      style = previousStyle; customColorSelected = previousCustomColor; restore(before);
       notice(error instanceof Error ? error.message : '無法調整樣式，原文件仍保留。');
+      refresh(); return;
     }
   }
+  // Persist successful choices in the style controls; selecting existing annotations does not overwrite them.
+  preferredStyle = { color: style.color, sizeLevel: sizeLevel ?? preferredStyle.sizeLevel, customColor: customColorSelected };
+  try { localStorage.setItem(stylePreferenceKey, JSON.stringify(preferredStyle)); }
+  catch { notice('目前樣式仍可使用，但無法記住設定；請確認此環境允許本機儲存。'); }
   refresh();
 }
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-color],[data-size]')) {
   button.addEventListener('click', () => {
-    setStyle(button.dataset.color ? { color: button.dataset.color } : { size: Number(button.dataset.size) });
+    setStyle(button.dataset.color ? { color: button.dataset.color } : { size: Number(button.dataset.size) }, button.dataset.sizeLevel ? Number(button.dataset.sizeLevel) : undefined, button.dataset.color ? false : undefined);
     if (!pinned) setPanel(null);
     canvas.focus();
   });
 }
-customColor.addEventListener('input', () => setStyle({ color: customColor.value }));
+customColor.addEventListener('input', () => setStyle({ color: customColor.value }, undefined, true));
 customColor.addEventListener('change', () => { if (!pinned) setPanel(null); });
 
 function position(event: MouseEvent): Point {
@@ -290,6 +453,8 @@ function position(event: MouseEvent): Point {
   };
 }
 function handles(item: Annotation) {
+  if (isInk(item)) return [];
+  if (item.kind === 'text') return [{ x: item.start.x, y: (item.start.y + item.end.y) / 2 }, { x: item.end.x, y: (item.start.y + item.end.y) / 2 }, item.end];
   return !item.kind || item.kind === 'arrow' || item.kind === 'line' ? [item.start, item.end] :
     [item.start, item.end, { x: item.end.x, y: item.start.y }, { x: item.start.x, y: item.end.y }];
 }
@@ -301,9 +466,11 @@ function hit(point: Point) {
   ctx.lineWidth = 8 / zoom;
   let result: number | null = null;
   for (let index = arrows.length - 1; index >= 0; index--) {
-    const path = new Path2D(shapePath(arrows[index]!));
+    const item = arrows[index]!;
+    const path = new Path2D(shapePath(item));
+    if (item.kind === 'text' && ctx.isPointInPath(path, point.x, point.y)) { result = index; break; }
     const isArrow = !arrows[index]!.kind || arrows[index]!.kind === 'arrow';
-    ctx.lineWidth = (isArrow ? 0 : shapeStroke(arrows[index]!.size)) + 8 / zoom;
+    ctx.lineWidth = (isArrow ? 0 : shapeStroke(item.size) * (item.kind === 'highlighter' ? 2 : 1)) + 8 / zoom;
     if ((isArrow && ctx.isPointInPath(path, point.x, point.y)) || ctx.isPointInStroke(path, point.x, point.y)) {
       result = index;
       break;
@@ -319,6 +486,28 @@ canvas.addEventListener('pointerdown', event => {
   if (!pinned) setPanel(null);
   document.querySelector<HTMLElement>('#notification')!.hidden = true;
   const point = position(event);
+  const onHandle = selected !== null && handles(arrows[selected]!).some(p => Math.hypot(p.x - point.x, p.y - point.y) <= 12 / zoom);
+  if (tool === 'text' && !onHandle && hit(point) === null) { event.preventDefault(); beginText(point); return; }
+  const inkHit = hit(point);
+  const selectsInk = inkHit !== null && isInk(arrows[inkHit]!) && wet?.index !== inkHit;
+  if ((tool === 'pen' || tool === 'highlighter') && !selectsInk) {
+    if (wet && arrows[wet.index]?.kind !== tool) finishWetInk();
+    if (wet && arrows[wet.index]!.strokes!.length >= 2000) finishWetInk();
+    if (!wet) {
+      if (arrows.length >= 500) { notice('目前文件最多容納 500 個標註。'); return; }
+      const before = snapshot();
+      arrows.push({ kind: tool, start: { ...point }, end: { ...point }, ...style, strokes: [] });
+      wet = { index: arrows.length - 1, before, ended: null };
+    }
+    clearTimeout(wetTimer); cancelAnimationFrame(wetFrame);
+    wet.ended = null;
+    const before = snapshot(), item = arrows[wet.index]!;
+    item.strokes!.push([{ x: point.x - item.start.x, y: point.y - item.start.y }]);
+    drag = { pointerId: event.pointerId, target: 'ink', index: wet.index, origin: point, before, previousSelection: null, moved: false };
+    selected = null; changed = true; revision++; invalidateDownload();
+    canvas.setPointerCapture(event.pointerId); canvas.focus(); refresh(); return;
+  }
+  finishWetInk();
   const before = snapshot();
   const previousSelection = selected;
   let target: 'new' | 'move' | 'start' | 'end' | 'ne' | 'sw' = 'move';
@@ -334,7 +523,7 @@ canvas.addEventListener('pointerdown', event => {
     selected = arrows.length - 1;
     target = 'new';
   } else {
-    style = { color: arrows[selected]!.color, size: arrows[selected]!.size };
+    useAnnotationStyle(arrows[selected]!);
   }
   drag = { pointerId: event.pointerId, target, index: selected, origin: point, before, previousSelection, moved: false };
   if (target === 'new') selected = null;
@@ -353,6 +542,18 @@ function move(event: PointerEvent) {
   if (!drag || drag.pointerId !== event.pointerId) return;
   let point = position(event);
   const arrow = arrows[drag.index]!;
+  if (drag.target === 'ink') {
+    const stroke = arrow.strokes!.at(-1)!;
+    // ponytail: keep up to 100k sampled points per group; stop this stroke rather than silently discard input at the limit.
+    let count = arrow.strokes!.reduce((count, s) => count + s.length, 0);
+    if (count >= 100000) { notice('這組筆畫已達 100,000 點，請放開後另起一組。'); return; }
+    for (const sample of event.getCoalescedEvents?.().length ? event.getCoalescedEvents() : [event]) {
+      point = position(sample);
+      const local = { x: point.x - arrow.start.x, y: point.y - arrow.start.y }, last = stroke.at(-1)!;
+      if (Math.hypot(local.x - last.x, local.y - last.y) >= .5 && count < 100000) { stroke.push(local); count++; }
+    }
+    drag.moved = true; refresh(); return;
+  }
   const dx = point.x - drag.origin.x;
   const dy = point.y - drag.origin.y;
   if (Math.hypot(dx, dy) * zoom > (event.pointerType === 'touch' ? 8 : 2)) {
@@ -366,6 +567,16 @@ function move(event: PointerEvent) {
     const ty = dy;
     arrow.start = { x: original.start.x + tx, y: original.start.y + ty };
     arrow.end = { x: original.end.x + tx, y: original.end.y + ty };
+  } else if (arrow.kind === 'text') {
+    const original = drag.before.arrows[drag.index]!;
+    if (drag.target === 'start') arrow.start.x = Math.min(point.x, arrow.end.x - 32);
+    else if (drag.target === 'end') arrow.end.x = Math.max(arrow.start.x + 32, point.x);
+    else {
+      const factor = Math.max(.1, (point.x - original.start.x) / (original.end.x - original.start.x));
+      arrow.fontSize = Math.max(8, Math.min(256, (original.fontSize ?? textSize(original.size)) * factor));
+      arrow.end.x = arrow.start.x + Math.max(32, (original.end.x - original.start.x) * arrow.fontSize / (original.fontSize ?? textSize(original.size)));
+    }
+    updateTextGeometry(arrow);
   } else {
     const end = drag.target === 'new' ? 'end' : drag.target;
     if (event.shiftKey) {
@@ -395,6 +606,18 @@ function finishDrag(event: PointerEvent) {
   clearTimeout(holdTimer);
   move(event);
   const { target, before, moved, index, previousSelection } = drag;
+  if (target === 'ink') {
+    drag = null;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    try { expandFor(arrows[index]!); }
+    catch (error) { restore(before); notice(String(error)); }
+    if (wet) {
+      if (!arrows[index]!.strokes?.length) { arrows.splice(index, 1); wet = null; }
+      else if (arrows[index]!.kind === 'highlighter' || arrows[index]!.strokes!.reduce((n, s) => n + s.length, 0) >= 100000) finishWetInk();
+      else { wet.ended = performance.now(); wetTimer = setTimeout(finishWetInk, 1000); animateInk(); }
+    }
+    refresh(); return;
+  }
   if (target === 'new' && (!moved || !shapePath(arrows[index]!))) {
     restore(before);
     selected = null;
@@ -419,9 +642,13 @@ canvas.addEventListener('pointerup', finishDrag);
 function cancelDrag() {
   clearTimeout(holdTimer);
   if (!drag) return;
-  const { before, previousSelection, pointerId } = drag;
+  const { before, previousSelection, pointerId, target, index } = drag;
   drag = null;
   restore(before);
+  if (target === 'ink' && wet) {
+    if (!arrows[index]?.strokes?.length) { arrows.splice(index, 1); wet = null; }
+    else { wet.ended = performance.now(); wetTimer = setTimeout(finishWetInk, 1000); animateInk(); }
+  }
   selected = previousSelection;
   if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
   refresh();
@@ -435,6 +662,8 @@ canvas.addEventListener('lostpointercapture', event => {
 });
 function history(backwards: boolean) {
   cancelDrag();
+  if (!finishText()) return;
+  finishWetInk();
   if (cropDraft) finishCrop(false);
   closeMenus();
   const source = backwards ? undo : redo;
@@ -451,6 +680,8 @@ function history(backwards: boolean) {
 function clear(newName?: string) {
   opening++;
   cancelDrag();
+  if (!finishText()) return;
+  finishWetInk();
   closeMenus();
   const before = snapshot();
   arrows = [];
@@ -465,6 +696,7 @@ function clear(newName?: string) {
   if (newName !== undefined) { name.value = newName; resizeName(); }
   layout();
   commit(before);
+  if (newName !== undefined) { savedState = snapshot(); changed = false; }
   refresh();
 }
 document.querySelector('#blank')!.addEventListener('click', () => {
@@ -475,6 +707,8 @@ document.querySelector('#blank')!.addEventListener('click', () => {
 document.querySelector('#trash')!.addEventListener('click', () => clear());
 function deleteSelected() {
   cancelDrag();
+  if (!finishText()) return;
+  finishWetInk();
   if (selected === null) return;
   const before = snapshot();
   arrows.splice(selected, 1);
@@ -485,7 +719,7 @@ function deleteSelected() {
 }
 function showArrowMenu(index: number, x: number, y: number) {
   selected = index;
-  style = { color: arrows[index]!.color, size: arrows[index]!.size };
+  useAnnotationStyle(arrows[index]!);
   closeMenus();
   refresh();
   arrowMenu.style.left = `${Math.max(8, Math.min(x, innerWidth - 112))}px`;
@@ -523,12 +757,14 @@ async function chooseFile() {
 }
 document.querySelector('#open-image')!.addEventListener('click', chooseFile);
 async function openFile(file: File) {
+  if (!finishText()) return;
+  cancelDrag(); finishWetInk();
   const request = ++opening;
   try {
     const loaded = /\.markboxy$/i.test(file.name) ? await readProject(file) : null;
     const next = loaded ? loaded.background : await loadImage(file);
     if (request !== opening) return;
-    if (changed && !await askDiscard('開啟檔案會取代目前文件。尚未儲存的內容仍可用復原還原；要繼續嗎？')) return;
+    if (hasUnsavedChanges() && !await askDiscard('開啟檔案會取代目前文件。尚未儲存的內容仍可用復原還原；要繼續嗎？')) return;
     if (request !== opening) return;
     cancelDrag(); closeMenus();
     const before = snapshot();
@@ -538,6 +774,7 @@ async function openFile(file: File) {
     name.style.width = `${Math.min(240, Math.max(28, name.value.length * 12))}px`;
     layout(); commit(before); refresh(); canvas.focus();
     changed = !loaded;
+    if (loaded) savedState = snapshot();
     notice(loaded ? '已開啟可編輯文件，圖片與標註均已還原。' : '已開啟圖片，所有編輯都在本機處理。');
   } catch (error) { if (request === opening) notice(error instanceof Error ? error.message : '無法開啟圖片，原文件仍保留。'); }
 }
@@ -569,11 +806,10 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-zoom]')
 }
 function setFormat(value: typeof format) {
   format = value; exportFormat.value = value;
-  document.querySelector('#format')!.innerHTML = `.${value === 'jpeg' ? 'jpg' : 'png'}<small>▾</small>`;
+  document.querySelector('#format')!.innerHTML = `.${value === 'jpeg' ? 'jpg' : 'png'}<svg class="chevron" aria-hidden="true"><use href="#i-chevron"/></svg>`;
   document.querySelector('#quality-label')!.toggleAttribute('hidden', value !== 'jpeg');
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) {
     b.setAttribute('aria-pressed', String(b.dataset.format === value));
-    b.textContent = `${b.dataset.format === value ? '✓ ' : ''}${b.dataset.format === 'jpeg' ? 'JPG' : 'PNG'}`;
   }
   document.querySelector('#export .png-file b')!.textContent = value === 'jpeg' ? 'JPG' : 'PNG';
   document.querySelector('#export')!.setAttribute('aria-label', `匯出 ${value === 'jpeg' ? 'JPEG' : 'PNG'}；拖出 PNG`);
@@ -584,6 +820,8 @@ function setFormat(value: typeof format) {
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) b.addEventListener('click', () => { setFormat(b.dataset.format as typeof format); closeMenus(); });
 exportFormat.addEventListener('change', () => setFormat(exportFormat.value as typeof format));
 function exportPNG() {
+  if (!finishText()) throw new Error('請先完成文字編輯。');
+  finishWetInk();
   if (cropDraft) throw new Error('請先套用或取消裁切。');
   const output = document.createElement('canvas');
   output.width = view().width;
@@ -598,6 +836,8 @@ function filename(value = name.value, extension = format === 'jpeg' ? 'jpg' : 'p
   return `${value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\.(png|jpg|jpeg|markboxy)$/i, '') || '空白'}.${extension}`;
 }
 async function exportImage(outputFormat: typeof format = format) {
+  if (!finishText()) throw new Error('請先完成文字編輯。');
+  finishWetInk();
   if (cropDraft) throw new Error('請先套用或取消裁切。');
   const output = document.createElement('canvas'); output.width = view().width; output.height = view().height; drawScene(output);
   const quality = Number(document.querySelector<HTMLInputElement>('#quality')!.value) / 100;
@@ -624,13 +864,16 @@ function offerDownload(blob: Blob, filename: string) {
 }
 async function saveProject() {
   cancelDrag(); closeMenus();
+  if (!finishText()) return;
+  finishWetInk();
   if (cropDraft) { notice('請先套用或取消裁切，再儲存文件。'); return; }
   const project: Project = { format: 'markboxy', version: 2, name: name.value, width, height, crop, annotations: arrows, background: background && { src: background.src, x: background.x, y: background.y, width: background.width, height: background.height } };
   const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
   const savedRevision = revision;
+  const savingState = snapshot();
   try {
     if (desktop) {
-      if (await nativeSave(blob, filename(name.value, 'markboxy'))) { if (savedRevision === revision) changed = false; notice('可編輯文件已儲存。'); }
+      if (await nativeSave(blob, filename(name.value, 'markboxy'))) { savedState = savingState; if (savedRevision === revision) changed = false; notice('可編輯文件已儲存。'); }
     } else { offerDownload(blob, filename(name.value, 'markboxy')); notice('已開始下載可編輯文件；請確認下載完成後再關閉，避免遺失編輯。'); }
   } catch (error) { notice(`儲存失敗：${String(error)} 原文件仍保留。`); }
 }
@@ -669,7 +912,10 @@ document.querySelector('#export')!.addEventListener('dragstart', event => {
 });
 document.querySelector('#close-notification')!.addEventListener('click', () => { document.querySelector<HTMLElement>('#notification')!.hidden = true; });
 document.addEventListener('keydown', event => {
-  if (dialog.open) return;
+  // Native editing shortcuts keep canvas focus; only Tab navigation needs the outer focus ring.
+  if (event.key === 'Tab') canvas.dataset.tabFocus = '';
+  else if (document.activeElement === canvas) delete canvas.dataset.tabFocus;
+  if (dialog.open || event.isComposing) return;
   if (event.key === 'Escape') {
     if (drag) cancelDrag();
     else if (cropDraft) finishCrop(false);
@@ -678,7 +924,7 @@ document.addEventListener('keydown', event => {
     return;
   }
   const command = event.metaKey || event.ctrlKey;
-  if ((event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) && !(command && ['s', 'o', 'e'].includes(event.key.toLowerCase()))) return;
+  if ((event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) && !(command && ['s', 'o', 'e'].includes(event.key.toLowerCase()))) return;
   const active = document.activeElement;
   if (!active?.closest('main,footer,header')) return;
   if (command && event.key.toLowerCase() === 'c') {
@@ -698,7 +944,7 @@ document.addEventListener('keydown', event => {
   }
 });
 window.addEventListener('beforeunload', event => {
-  if (changed && !desktop) { event.preventDefault(); event.returnValue = ''; }
+  if (hasUnsavedChanges() && !desktop) { event.preventDefault(); event.returnValue = ''; }
 });
 function cropCorners(c: Crop) {
   return [{ x: c.x, y: c.y }, { x: c.x + c.width / 2, y: c.y }, { x: c.x + c.width, y: c.y }, { x: c.x + c.width, y: c.y + c.height / 2 }, { x: c.x + c.width, y: c.y + c.height }, { x: c.x + c.width / 2, y: c.y + c.height }, { x: c.x, y: c.y + c.height }, { x: c.x, y: c.y + c.height / 2 }];
@@ -719,7 +965,9 @@ function finishCrop(apply: boolean) {
   commit(before); layout(); canvas.focus();
 }
 document.querySelector('#crop-tool')!.addEventListener('click', () => {
-  cancelDrag(); closeMenus(); setPanel(null); selected = null;
+  cancelDrag();
+  if (!finishText()) return;
+  finishWetInk(); closeMenus(); setPanel(null); selected = null;
   cropDraft = { ...(crop ?? { x: 0, y: 0, width, height }) };
   document.querySelector<HTMLElement>('#crop-bar')!.hidden = false;
   document.querySelector('#crop-tool')!.setAttribute('aria-pressed', 'true');
@@ -804,14 +1052,16 @@ canvas.addEventListener('lostpointercapture', () => { pan = null; });
 
 if (desktop) {
   const captureButton = document.querySelector<HTMLButtonElement>('#capture-region')!;
-  captureButton.disabled = false;
-  async function capture() {
+  const screenButton = document.querySelector<HTMLButtonElement>('#capture-screen')!;
+  captureButton.disabled = screenButton.disabled = false;
+  async function capture(fullScreen = false) {
     if (dialog.open || cropDraft) { notice('請先關閉匯出視窗或完成裁切，再進行截圖。'); return; }
     closeMenus();
-    try { const file = await nativeCapture(); if (file) await openFile(file); }
-    catch (error) { notice(`截圖失敗：${String(error)}`); }
+    try { const file = await nativeCapture(fullScreen); if (file) await openFile(file); }
+    catch (error) { notice(String(error)); }
   }
-  captureButton.addEventListener('click', capture);
-  void desktopEvents(capture, async () => !changed || await askDiscard('尚有未儲存的編輯。確定關閉 Markboxy 嗎？')).catch(error => notice(`無法連接桌面事件：${String(error)}`));
+  captureButton.addEventListener('click', () => void capture());
+  screenButton.addEventListener('click', () => void capture(true));
+  void desktopEvents(() => void capture(), async () => !hasUnsavedChanges() || await askDiscard('尚有未儲存的編輯。確定關閉 Markboxy 嗎？')).catch(error => notice(`無法連接桌面事件：${String(error)}`));
 }
 layout();

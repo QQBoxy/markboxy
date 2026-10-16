@@ -1,12 +1,71 @@
-import { arrowPath, expandedCanvas, type Arrow } from './arrow.ts';
+import { arrowPath, expandedCanvas, type Arrow, type Point } from './arrow.ts';
 
-export type Annotation = Arrow & { kind?: 'arrow' | 'rectangle' | 'roundedRectangle' | 'ellipse' | 'line' };
+export type Annotation = Arrow & {
+  kind?: 'arrow' | 'rectangle' | 'roundedRectangle' | 'ellipse' | 'line' | 'text' | 'pen' | 'highlighter';
+  text?: string; fontSize?: number;
+  /** Each stroke is local to start, so moving the object preserves all subpaths. */
+  strokes?: Point[][];
+};
 export type Background = { src: string; image: HTMLImageElement; x: number; y: number; width: number; height: number };
 export const MAX_SIDE = 4096;
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 export const TOOL_SIZES = [8.977159880834161, 17.954319761668323, 26.931479642502484, 35.908639523336646, 58.35153922542205] as const;
+export function readStylePreference(value: string | null): { color: string; sizeLevel: number; customColor?: boolean } {
+  try {
+    const style = JSON.parse(value ?? 'null');
+    if (style && typeof style.color === 'string' && /^#[0-9a-f]{6}$/i.test(style.color)) {
+      const color = { color: style.color.toLowerCase(), ...(typeof style.customColor === 'boolean' ? { customColor: style.customColor } : {}) };
+      if (Number.isInteger(style.sizeLevel) && style.sizeLevel >= 1 && style.sizeLevel <= 5) {
+        return { ...color, sizeLevel: style.sizeLevel };
+      }
+      // One-time compatibility with the earlier preference format; new choices store the level directly.
+      if (style.sizeLevel === undefined && typeof style.size === 'number' && Number.isFinite(style.size) && style.size >= 1 && style.size <= 100) {
+        const distances = TOOL_SIZES.map(size => Math.abs(size - style.size));
+        return { ...color, sizeLevel: distances.indexOf(Math.min(...distances)) + 1 };
+      }
+    }
+  } catch { /* A damaged preference must not prevent opening the editor. */ }
+  return { color: '#ff2600', sizeLevel: 2 };
+}
 const SHAPE_STROKES = [1.1221449851042702, 3.3664349553128106, 7.855014895729891, 16.832174776564052, 34.786494538232375] as const;
+export const isInk = (item: Annotation) => item.kind === 'pen' || item.kind === 'highlighter';
+export const inkAlpha = (elapsed: number) => Math.min(1, .25 + .75 * Math.max(0, elapsed) / 1000);
+export function textSize(size: number) {
+  // ponytail: native font metrics are not measured; use five explicit presets until original text samples are measured.
+  const sizes = [12, 18, 24, 36, 48];
+  const distances = TOOL_SIZES.map(s => Math.abs(s - size));
+  return sizes[distances.indexOf(Math.min(...distances))]!;
+}
+export const textFont = (item: Annotation) => `700 ${item.fontSize ?? textSize(item.size)}px Arial, sans-serif`;
+export function textLines(item: Annotation, measure: (text: string) => number): string[] {
+  const maxWidth = Math.max(1, item.end.x - item.start.x - 16);
+  const result: string[] = [];
+  for (const paragraph of (item.text ?? '').split('\n')) {
+    let line = '';
+    // Keep words together when possible, but allow long words and Chinese text to wrap.
+    for (const word of paragraph.match(/\s+|[A-Za-z0-9_]+|[^\s]/gu) ?? []) {
+      if (line && measure(line + word) > maxWidth) { result.push(line); line = ''; }
+      for (const character of word) {
+        if (line && measure(line + character) > maxWidth) { result.push(line); line = ''; }
+        line += character;
+      }
+    }
+    result.push(line);
+  }
+  return result;
+}
+export function annotationBounds(item: Annotation) {
+  if (isInk(item)) {
+    let left = item.start.x, top = item.start.y, right = left, bottom = top;
+    for (const stroke of item.strokes ?? []) for (const p of stroke) {
+      left = Math.min(left, item.start.x + p.x); right = Math.max(right, item.start.x + p.x);
+      top = Math.min(top, item.start.y + p.y); bottom = Math.max(bottom, item.start.y + p.y);
+    }
+    return { left, top, right, bottom };
+  }
+  return { left: Math.min(item.start.x, item.end.x), top: Math.min(item.start.y, item.end.y), right: Math.max(item.start.x, item.end.x), bottom: Math.max(item.start.y, item.end.y) };
+}
 export function shapeStroke(size: number): number {
   // ponytail: the five native presets are measured; interpolate only for custom sizes from editable files.
   if (size <= TOOL_SIZES[0]) return size * SHAPE_STROKES[0] / TOOL_SIZES[0];
@@ -18,12 +77,18 @@ export function shapeStroke(size: number): number {
 
 export function shapePath(item: Annotation): string {
   if (!item.kind || item.kind === 'arrow') return arrowPath(item);
+  if (isInk(item)) return (item.strokes ?? []).map(stroke => {
+    if (!stroke.length) return '';
+    const points = stroke.map(p => `${item.start.x + p.x},${item.start.y + p.y}`);
+    // A tiny segment gives a single click the same round cap as a normal stroke.
+    return `M${points[0]}${stroke.length === 1 ? `l0.001,0` : `L${points.slice(1).join('L')}`}`;
+  }).join('');
   const { start: a, end: b } = item;
   if (![a.x, a.y, b.x, b.y, item.size].every(Number.isFinite) || item.size <= 0) throw new RangeError('無效的圖形座標。');
   const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(a.x - b.x), h = Math.abs(a.y - b.y);
   if (item.kind === 'line') return Math.hypot(w, h) < .01 ? '' : `M${a.x},${a.y}L${b.x},${b.y}`;
   if (w < .01 || h < .01) return '';
-  if (item.kind === 'rectangle') return `M${x},${y}h${w}v${h}h${-w}Z`;
+  if (item.kind === 'rectangle' || item.kind === 'text') return `M${x},${y}h${w}v${h}h${-w}Z`;
   if (item.kind === 'roundedRectangle') {
     // ponytail: fixed 12px radius clamped to the box; revisit with measured original corner samples.
     const r = Math.min(12, w / 2, h / 2);
@@ -33,11 +98,12 @@ export function shapePath(item: Annotation): string {
 }
 export function expandedScene(width: number, height: number, item: Annotation) {
   if (!item.kind || item.kind === 'arrow') return expandedCanvas(width, height, item);
-  const margin = shapeStroke(item.size) / 2;
-  const offsetX = Math.max(0, -Math.floor(Math.min(item.start.x, item.end.x) - margin));
-  const offsetY = Math.max(0, -Math.floor(Math.min(item.start.y, item.end.y) - margin));
-  const nextWidth = Math.max(width, Math.ceil(Math.max(item.start.x, item.end.x) + margin)) + offsetX;
-  const nextHeight = Math.max(height, Math.ceil(Math.max(item.start.y, item.end.y) + margin)) + offsetY;
+  const margin = item.kind === 'text' ? 4 : shapeStroke(item.size) * (item.kind === 'highlighter' ? 1 : .5);
+  const bounds = annotationBounds(item);
+  const offsetX = Math.max(0, -Math.floor(bounds.left - margin));
+  const offsetY = Math.max(0, -Math.floor(bounds.top - margin));
+  const nextWidth = Math.max(width, Math.ceil(bounds.right + margin)) + offsetX;
+  const nextHeight = Math.max(height, Math.ceil(bounds.bottom + margin)) + offsetY;
   if (nextWidth > MAX_SIDE || nextHeight > MAX_SIDE) throw new RangeError('畫布延展上限為 4096 × 4096 像素。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
 }
@@ -116,9 +182,23 @@ export function validateProject(value: unknown): Project {
   if (!Array.isArray(p.annotations) || p.annotations.length > 500) fail();
   const annotations = (p.annotations as unknown[]).map(v => {
     const a = object(v), s = object(a.start), e = object(a.end);
-    if (a.kind !== undefined && !['arrow', 'rectangle', 'roundedRectangle', 'ellipse', 'line'].includes(String(a.kind))) fail();
+    if (a.kind !== undefined && !['arrow', 'rectangle', 'roundedRectangle', 'ellipse', 'line', 'text', 'pen', 'highlighter'].includes(String(a.kind))) fail();
     if (typeof a.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(a.color)) fail();
     const item: Annotation = { kind: a.kind as Annotation['kind'], color: a.color as string, size: number(a.size, 1, 100), start: { x: number(s.x, -MAX_SIDE, MAX_SIDE * 2), y: number(s.y, -MAX_SIDE, MAX_SIDE * 2) }, end: { x: number(e.x, -MAX_SIDE, MAX_SIDE * 2), y: number(e.y, -MAX_SIDE, MAX_SIDE * 2) } };
+    if (item.kind === 'text') {
+      if (typeof a.text !== 'string' || !a.text.trim() || a.text.length > 10000 || item.end.x - item.start.x < 16 || item.end.y <= item.start.y) fail();
+      item.text = a.text as string; item.fontSize = number(a.fontSize, 8, 256);
+    } else if (isInk(item)) {
+      if (!Array.isArray(a.strokes) || !a.strokes.length || a.strokes.length > 2000) fail();
+      let count = 0;
+      item.strokes = (a.strokes as unknown[]).map(stroke => {
+        if (!Array.isArray(stroke) || !stroke.length || (count += stroke.length) > 100000) fail();
+        return (stroke as unknown[]).map(point => {
+          const p = object(point);
+          return { x: number(p.x, -MAX_SIDE * 3, MAX_SIDE * 3), y: number(p.y, -MAX_SIDE * 3, MAX_SIDE * 3) };
+        });
+      });
+    }
     if (!shapePath(item)) fail();
     return item;
   });

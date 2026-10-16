@@ -115,6 +115,13 @@ fn new_editor(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[tauri::command]
 async fn capture_region(window: tauri::WebviewWindow) -> Result<Option<OpenedFile>, String> {
+    capture(window, false).await
+}
+#[tauri::command]
+async fn capture_screen(window: tauri::WebviewWindow) -> Result<Option<OpenedFile>, String> {
+    capture(window, true).await
+}
+async fn capture(window: tauri::WebviewWindow, full_screen: bool) -> Result<Option<OpenedFile>, String> {
     if CAPTURING.swap(true, Ordering::SeqCst) { return Err("正在截圖，請先完成或取消。".into()); }
     let result = tauri::async_runtime::spawn_blocking(move || {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "系統時間無效。")?.as_nanos();
@@ -125,17 +132,24 @@ async fn capture_region(window: tauri::WebviewWindow) -> Result<Option<OpenedFil
         let path = dir.join("截圖.png");
         let result = (|| {
             window.hide().map_err(|_| "無法隱藏編輯器。")?;
-            // ponytail: native macOS region selection owns display scaling and screen-recording permission UI.
+            // Allow the compositor to remove the editor before an immediate full-screen capture.
+            if full_screen { std::thread::sleep(std::time::Duration::from_millis(200)); }
+            // ponytail: full-screen captures the primary display; add a display picker only when requested.
+            // Native macOS capture owns display scaling and screen-recording permission UI.
             #[cfg(target_os = "macos")]
-            let captured = std::process::Command::new("/usr/sbin/screencapture").args(["-i", "-x", "-t", "png"]).arg(&path).output();
+            let captured = std::process::Command::new("/usr/sbin/screencapture").args(if full_screen { ["-m", "-x", "-t", "png"] } else { ["-i", "-x", "-t", "png"] }).arg(&path).output();
             #[cfg(target_os = "windows")]
-            let captured = capture_windows(&path);
+            let captured = capture_windows(&path, full_screen);
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let captured: std::io::Result<std::process::Output> = Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unsupported"));
             match captured {
                 Ok(output) if output.status.success() && path.exists() => file_data(&path, 20 * 1024 * 1024).map(Some),
-                Ok(output) if (output.status.success() || output.status.code() == Some(1)) && output.stderr.is_empty() && !path.exists() => Ok(None),
-                _ => Err("截圖失敗。請確認系統螢幕擷取權限，或先以系統工具截圖再匯入。".into()),
+                Ok(output) if !full_screen && (output.status.success() || output.status.code() == Some(1)) && output.stderr.is_empty() && !path.exists() => Ok(None),
+                Ok(output) => {
+                    let detail = String::from_utf8_lossy(&output.stderr).trim().chars().take(300).collect::<String>();
+                    Err(format!("截圖失敗。請確認系統螢幕擷取權限與可用的主螢幕，或先以系統工具截圖再匯入。{}", if detail.is_empty() { String::new() } else { format!("\n系統訊息：{detail}") }))
+                }
+                Err(_) => Err("無法啟動系統截圖工具。請先以系統工具截圖再匯入。".into()),
             }
         })();
         let _ = window.show(); let _ = window.set_focus();
@@ -144,14 +158,17 @@ async fn capture_region(window: tauri::WebviewWindow) -> Result<Option<OpenedFil
     CAPTURING.store(false, Ordering::SeqCst); result
 }
 #[cfg(target_os = "windows")]
-fn capture_windows(path: &Path) -> std::io::Result<std::process::Output> {
+fn capture_windows(path: &Path, full_screen: bool) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
     // Keep the native script within our private temporary directory. Do not bypass execution policy.
     let script = path.with_extension("ps1");
     fs::write(&script, include_str!("capture-windows.ps1"))?;
-    let result = std::process::Command::new("powershell.exe")
+    let mut command = std::process::Command::new("powershell.exe");
+    command
         .args(["-NoLogo", "-NoProfile", "-STA", "-NonInteractive", "-File"])
-        .arg(&script).arg("-OutputPath").arg(path).creation_flags(0x08000000).output();
+        .arg(&script).arg("-OutputPath").arg(path).creation_flags(0x08000000);
+    if full_screen { command.arg("-FullScreen"); }
+    let result = command.output();
     let _ = fs::remove_file(script); result
 }
 fn main() {
@@ -203,7 +220,7 @@ fn main() {
             if let tauri::WindowEvent::Focused(true) = event { *LAST_WINDOW.lock().unwrap() = Some(window.label().to_owned()); }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event { api.prevent_close(); let _ = window.app_handle().emit_to(window.label(), "editor-close-requested", ()); }
         })
-        .invoke_handler(tauri::generate_handler![open_document, save_document, confirm_discard, close_editor, cancel_quit, capture_region])
+        .invoke_handler(tauri::generate_handler![open_document, save_document, confirm_discard, close_editor, cancel_quit, capture_region, capture_screen])
         .build(tauri::generate_context!()).expect("無法啟動 Markboxy")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
