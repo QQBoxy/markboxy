@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="UTF-8">
+<title>快速拖曳事件檢查</title>
+<style>body{margin:0}iframe{position:fixed;inset:0;width:100%;height:100%;border:0}#result{position:fixed;top:0;right:0;z-index:2;max-width:70%;background:#fff}</style>
+<iframe src="/"></iframe><output id="result">事件記錄就緒</output><pre id="trace" hidden></pre>
+<script type="module">
+const frame = document.querySelector('iframe');
+frame.addEventListener('load', () => {
+  const doc = frame.contentDocument, win = frame.contentWindow, canvas = doc.querySelector('canvas');
+  const events = [];
+  let active = false;
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'gotpointercapture', 'lostpointercapture', 'dragstart', 'blur']) {
+    win.addEventListener(type, event => {
+      if (type === 'pointermove' && !active) return;
+      if (type === 'pointerdown') active = true;
+      if (type === 'pointerup' || type === 'pointercancel') active = false;
+      const entry = { type, time: event.timeStamp, id: event.pointerId, buttons: event.buttons, x: event.clientX, y: event.clientY, target: event.target.id };
+      events.push(entry);
+      if (events.length > 500) events.shift();
+      setTimeout(() => {
+        entry.state = canvas.getAttribute('aria-description');
+        document.querySelector('#trace').textContent = JSON.stringify(events);
+      });
+    }, true);
+  }
+  if (!location.search.includes('run')) return;
+  // Synthetic events have no OS pointer; emulate capture only in this test frame.
+  const captured = new Set();
+  canvas.setPointerCapture = id => captured.add(id);
+  canvas.hasPointerCapture = id => captured.has(id);
+  canvas.releasePointerCapture = id => {
+    captured.delete(id);
+    canvas.dispatchEvent(new win.PointerEvent('lostpointercapture', {pointerId:id}));
+  };
+  const r = canvas.getBoundingClientRect();
+  const send = (type, x, y, buttons = 1) => canvas.dispatchEvent(new win.PointerEvent(type, { bubbles:true, pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons, clientX:r.left + x, clientY:r.top + y }));
+  let passed = 0;
+  try {
+    for (let i = 0; i < 20; i++) {
+      const y = 30 + i * 25;
+      send('pointerdown', 50, y);
+      if (i % 2) send('pointermove', 300, y);
+      // Reproduce the captured Chrome sequence: capture loss precedes pointerup.
+      if (i % 3 === 0) send('lostpointercapture', 600, y, 0);
+      send('pointerup', 600, y, 0);
+      const count = Number(canvas.getAttribute('aria-description').match(/^\d+/)[0]);
+      if (count !== i + 1) throw new Error(`第${i + 1}次只剩${count}個標註`);
+      passed++;
+    }
+    for (const type of ['pointercancel', 'lostpointercapture']) {
+      send('pointerdown', 50, 600);
+      send('pointermove', 600, 600);
+      send(type, 600, 600, 1);
+      const count = Number(canvas.getAttribute('aria-description').match(/^\d+/)[0]);
+      if (count !== passed) throw new Error(`${type}未取消拖曳`);
+    }
+    // Crop also used to revert its preview when release preceded pointerup.
+    doc.querySelector('#crop-tool').click();
+    send('pointerdown', 200, 200); send('pointermove', 400, 400);
+    const cropWidth = doc.querySelector('#crop-width').value;
+    send('lostpointercapture', 400, 400, 0); send('pointerup', 400, 400, 0);
+    if (doc.querySelector('#crop-width').value !== cropWidth) throw new Error('裁切被提前釋放事件還原');
+    doc.querySelector('#crop-cancel').click();
+    document.querySelector('#result').textContent = `PASS: ${passed}次零延遲拖曳、提前失去捕捉、重複結束、真正取消及裁切`;
+  } catch (error) { document.querySelector('#result').textContent = `FAIL: ${error.message}`; }
+});
+</script>

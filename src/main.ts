@@ -16,6 +16,12 @@ let width = 1130;
 let height = 732;
 type Snapshot = { width: number; height: number; background: Background | null; arrows: Annotation[]; crop: Crop | null; name: string };
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
+const toolIcons = { arrow: 'arrow', rectangle: 'shape', roundedRectangle: 'rounded', ellipse: 'ellipse', line: 'line', crop: 'crop' };
+const toolCursors = Object.fromEntries(Object.entries(toolIcons).map(([kind, icon]) => {
+  const shape = document.querySelector(`#i-${icon}`)!.innerHTML;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M1 28h14M8 21v14" fill="none" stroke="white" stroke-width="3"/><path d="M1 28h14M8 21v14" fill="none" stroke="black"/><svg x="17" y="2" width="22" height="22" viewBox="0 0 32 32" color="TOOL_COLOR">${shape}</svg></svg>`;
+  return [kind, `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 28, crosshair`];
+}));
 const arrowMenu = document.querySelector<HTMLElement>('#arrow-menu')!;
 let holdTimer: ReturnType<typeof setTimeout> | undefined;
 const workspace = document.querySelector<HTMLElement>('#workspace')!;
@@ -127,6 +133,8 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
 }
 function refresh() {
   drawScene(canvas, true);
+  canvas.style.setProperty('--tool-cursor', toolCursors[cropDraft ? 'crop' : tool]!.replace('TOOL_COLOR', encodeURIComponent(style.color)));
+  canvas.style.cursor = 'var(--tool-cursor)';
   document.querySelector<HTMLElement>('#current-color')!.style.setProperty('--swatch', style.color);
   customColor.value = style.color;
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-color]')) {
@@ -380,9 +388,9 @@ function move(event: PointerEvent) {
 }
 canvas.addEventListener('pointermove', event => {
   if (drag) move(event);
-  else canvas.style.cursor = hit(position(event)) === null ? 'crosshair' : 'move';
+  else canvas.style.cursor = space ? 'grab' : cropDraft || hit(position(event)) === null ? 'var(--tool-cursor)' : 'move';
 });
-canvas.addEventListener('pointerup', event => {
+function finishDrag(event: PointerEvent) {
   if (!drag || drag.pointerId !== event.pointerId) return;
   clearTimeout(holdTimer);
   move(event);
@@ -404,9 +412,10 @@ canvas.addEventListener('pointerup', event => {
     }
   }
   drag = null;
-  canvas.releasePointerCapture(event.pointerId);
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   refresh();
-});
+}
+canvas.addEventListener('pointerup', finishDrag);
 function cancelDrag() {
   clearTimeout(holdTimer);
   if (!drag) return;
@@ -418,7 +427,12 @@ function cancelDrag() {
   refresh();
 }
 canvas.addEventListener('pointercancel', cancelDrag);
-canvas.addEventListener('lostpointercapture', cancelDrag);
+canvas.addEventListener('lostpointercapture', event => {
+  if (drag?.pointerId !== event.pointerId) return;
+  // Chrome can release capture on a buttons=0 move before delivering pointerup.
+  if (event.pointerType === 'mouse' && event.buttons === 0) finishDrag(event);
+  else cancelDrag();
+});
 function history(backwards: boolean) {
   cancelDrag();
   if (cropDraft) finishCrop(false);
@@ -557,11 +571,15 @@ function setFormat(value: typeof format) {
   format = value; exportFormat.value = value;
   document.querySelector('#format')!.innerHTML = `.${value === 'jpeg' ? 'jpg' : 'png'}<small>▾</small>`;
   document.querySelector('#quality-label')!.toggleAttribute('hidden', value !== 'jpeg');
-  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) b.setAttribute('aria-pressed', String(b.dataset.format === value));
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) {
+    b.setAttribute('aria-pressed', String(b.dataset.format === value));
+    b.textContent = `${b.dataset.format === value ? '✓ ' : ''}${b.dataset.format === 'jpeg' ? 'JPG' : 'PNG'}`;
+  }
   document.querySelector('#export .png-file b')!.textContent = value === 'jpeg' ? 'JPG' : 'PNG';
   document.querySelector('#export')!.setAttribute('aria-label', `匯出 ${value === 'jpeg' ? 'JPEG' : 'PNG'}；拖出 PNG`);
   document.querySelector('#export')!.setAttribute('title', '點一下匯出所選格式；拖出固定使用 PNG');
   document.querySelector('#share')!.setAttribute('aria-label', '匯出圖片');
+  document.querySelector('#share')!.setAttribute('title', `匯出 ${value === 'jpeg' ? 'JPG' : 'PNG'}…`);
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) b.addEventListener('click', () => { setFormat(b.dataset.format as typeof format); closeMenus(); });
 exportFormat.addEventListener('change', () => setFormat(exportFormat.value as typeof format));
@@ -753,7 +771,11 @@ canvas.addEventListener('pointerup', event => {
   cropDrag = null; canvas.releasePointerCapture(event.pointerId);
 }, true);
 canvas.addEventListener('pointercancel', cancelCropDrag);
-canvas.addEventListener('lostpointercapture', cancelCropDrag);
+canvas.addEventListener('lostpointercapture', event => {
+  if (cropDrag?.id !== event.pointerId) return;
+  if (event.pointerType === 'mouse' && event.buttons === 0) cropDrag = null;
+  else cancelCropDrag();
+});
 window.addEventListener('blur', cancelCropDrag);
 
 let space = false;
@@ -762,7 +784,7 @@ document.addEventListener('keydown', event => {
   if (event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.altKey && document.activeElement === canvas) { space = true; event.preventDefault(); canvas.style.cursor = 'grab'; }
   if (event.key === 'Enter' && cropDraft && document.activeElement === canvas) { event.preventDefault(); finishCrop(true); }
 });
-document.addEventListener('keyup', event => { if (event.code === 'Space') { space = false; canvas.style.cursor = 'crosshair'; } });
+document.addEventListener('keyup', event => { if (event.code === 'Space') { space = false; canvas.style.cursor = 'var(--tool-cursor)'; } });
 window.addEventListener('blur', () => { space = false; pan = null; });
 canvas.addEventListener('pointerdown', event => {
   if (cropDraft || (!space && event.button !== 1)) return;
