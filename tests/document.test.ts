@@ -9,7 +9,7 @@ test('shape geometry handles reverse drags and includes thick strokes when expan
   assert.equal(shapePath({ ...item, end: item.start }), '');
   const expanded = expandedScene(80, 70, item);
   assert.equal(expanded.width, 98); assert.equal(expanded.height, 96);
-  assert.throws(() => expandedScene(4096, 4096, { ...item, end: { x: 5000, y: 10 } }));
+  assert.throws(() => expandedScene(10000, 5000, { ...item, end: { x: 10001, y: 10 } }));
 });
 test('image headers reject oversized, truncated and disguised files before decoding', () => {
   const png = new Uint8Array(24);
@@ -17,7 +17,12 @@ test('image headers reject oversized, truncated and disguised files before decod
   const view = new DataView(png.buffer);
   view.setUint32(12, 0x49484452); view.setUint32(16, 640); view.setUint32(20, 480);
   assert.deepEqual(imageHeader(png), { width: 640, height: 480, mime: 'image/png' });
-  view.setUint32(16, 99999); assert.throws(() => imageHeader(png), /4096/);
+  for (const [width, height] of [[5338, 3929], [10000, 5000], [5000, 10000], [50000, 100]]) {
+    view.setUint32(16, width); view.setUint32(20, height);
+    assert.deepEqual(imageHeader(png), { width, height, mime: 'image/png' });
+  }
+  view.setUint32(16, 10000); view.setUint32(20, 5001);
+  assert.throws(() => imageHeader(png), /5000 萬/);
   assert.throws(() => imageHeader(new TextEncoder().encode('<svg onload="alert(1)">')));
   assert.throws(() => imageHeader(Uint8Array.of(255,216,255,192,0,17,8)));
   const jpeg = Uint8Array.of(255,216,255,192,0,8,8,1,224,2,128,3);
@@ -52,4 +57,18 @@ test('rounded boxes and horizontal/vertical lines remain editable through projec
   assert.equal(shapePath({ ...horizontal, end: horizontal.start }), '');
   const project = { format: 'markboxy', version: 2, name: '四種圖形', width: 100, height: 100, crop: null, background: null, annotations: [rounded, horizontal, vertical] };
   assert.deepEqual((await readProject(new Blob([JSON.stringify(project)]))).project, project);
+});
+
+
+test('large documents round trip using total pixels, including off-canvas annotations', async () => {
+  const { validateProject, readProject } = await import('../src/document.ts');
+  const project = { format: 'markboxy', version: 2, name: '大圖', width: 10000, height: 5000, crop: null, background: null,
+    annotations: [{ kind: 'arrow', start: { x: 9000, y: 100 }, end: { x: 11000, y: 200 }, size: 28, color: '#ff2600' }] };
+  assert.deepEqual((await readProject(new Blob([JSON.stringify(project)]))).project, project);
+  assert.throws(() => validateProject({ ...project, height: 5001 }));
+  for (const kind of ['arrow', 'rectangle'] as const) {
+    const item = { kind, start: { x: 10, y: 10 }, end: { x: 20, y: 20 }, size: 10, color: '#ff2600' };
+    assert.equal(expandedScene(10000, 5000, item).width, 10000);
+    assert.throws(() => expandedScene(10000, 5000, { ...item, end: { x: 10010, y: 200 } }), /5000 萬/);
+  }
 });

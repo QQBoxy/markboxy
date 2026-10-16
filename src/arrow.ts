@@ -1,3 +1,6 @@
+// ponytail: 50 MP bounds full-size surface memory; raise only after large-image device tests.
+export const MAX_PIXELS = 50_000_000;
+
 export type Point = { x: number; y: number };
 export type Arrow = { start: Point; end: Point; size: number; color: string };
 
@@ -74,7 +77,6 @@ export function expandedCanvas(width: number, height: number, arrow: Arrow) {
   const offsetY = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.y))));
   const nextWidth = Math.max(width, Math.ceil(Math.max(...extrema.map(p => p.x)))) + offsetX;
   const nextHeight = Math.max(height, Math.ceil(Math.max(...extrema.map(p => p.y)))) + offsetY;
-  // ponytail: keep decoded images and export surfaces within 4096 pixels per side; revisit with measured large-image memory budgets.
-  if (nextWidth > 4096 || nextHeight > 4096) throw new RangeError('畫布延展上限為 4096 × 4096 像素。');
+  if (nextWidth * nextHeight > MAX_PIXELS) throw new RangeError('畫布總像素上限為 5000 萬（寬 × 高）。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
 }

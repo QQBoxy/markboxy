@@ -61,7 +61,7 @@ test('canvas expands for the entire outline and rebases left/top overflow withou
   const above = expandedCanvas(1130, 732, { ...referenceArrow, start: { x: 100, y: -25 }, end: { x: 200, y: 100 } });
   assert.ok(above.offsetY >= 25);
   assert.equal(above.height, 732 + above.offsetY);
-  assert.throws(() => expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 5000, y: 200 } }), RangeError);
+  assert.throws(() => expandedCanvas(1130, 732, { ...referenceArrow, end: { x: 100000, y: 200 } }), RangeError);
 });
 
 test('all 120 native Skitch vectors match within the source serialization precision', () => {

@@ -14,7 +14,7 @@ if ([CaptureDpi]::SetThreadDpiAwarenessContext([IntPtr](-4)) -eq [IntPtr]::Zero)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $desktop = if ($FullScreen) { [System.Windows.Forms.Screen]::PrimaryScreen.Bounds } else { [System.Windows.Forms.SystemInformation]::VirtualScreen }
-if ($FullScreen -and ($desktop.Width -gt 4096 -or $desktop.Height -gt 4096)) { throw 'Primary display exceeds the 4096 x 4096 image limit. Use region capture instead.' }
+if ($FullScreen -and ([long]$desktop.Width * $desktop.Height -gt 50000000)) { throw 'Primary display exceeds the 50 million pixel image limit. Use region capture instead.' }
 if ([long]$desktop.Width * $desktop.Height -gt 64000000) { throw 'Desktop exceeds capture memory limit. Use the system capture tool and import a smaller image.' }
 $bitmap = New-Object System.Drawing.Bitmap($desktop.Width, $desktop.Height)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -57,8 +57,8 @@ try {
     if (!$script:down) { return }
     $script:down = $false; $form.Capture = $false
     if ($script:selection.Width -lt 1 -or $script:selection.Height -lt 1) { return }
-    if ($script:selection.Width -gt 4096 -or $script:selection.Height -gt 4096) {
-      [void][System.Windows.Forms.MessageBox]::Show($form, 'Please select a region no larger than 4096 x 4096 pixels.', 'Markboxy')
+    if ([long]$script:selection.Width * $script:selection.Height -gt 50000000) {
+      [void][System.Windows.Forms.MessageBox]::Show($form, 'Please select a region of at most 50 million pixels (width x height).', 'Markboxy')
       return
     }
     $form.DialogResult = 'OK'; $form.Close()

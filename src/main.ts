@@ -189,7 +189,7 @@ canvas.addEventListener('dblclick', event => {
 function view(): Crop { return (!cropDraft && crop) || { x: 0, y: 0, width, height }; }
 function drawScene(target: HTMLCanvasElement, editing = false) {
   const ctx = target.getContext('2d');
-  if (!ctx) throw new Error('瀏覽器無法建立繪圖畫布。');
+  if (!ctx) throw new Error('瀏覽器無法建立繪圖畫布，可能超過此裝置的畫布尺寸或記憶體限制。');
   const area = view();
   const scale = target.width / area.width;
   ctx.resetTransform();
@@ -317,10 +317,10 @@ function layout() {
   }
   stage.style.width = `${area.width * zoom}px`;
   stage.style.height = `${area.height * zoom}px`;
-  // ponytail: bound preview surfaces to 4096 per side even at high DPI/zoom; exports retain full document pixels.
-  const ratio = Math.min(devicePixelRatio, 2, 4096 / (Math.max(area.width, area.height) * zoom));
-  canvas.width = Math.max(1, Math.round(area.width * zoom * ratio));
-  canvas.height = Math.max(1, Math.round(area.height * zoom * ratio));
+  // ponytail: cap preview memory and keep long, thin preview surfaces within 4096 per side; neither cap rejects or resizes the original image.
+  const ratio = Math.min(devicePixelRatio, 2, Math.min(Math.sqrt(16_000_000 / (area.width * area.height)), 4096 / Math.max(area.width, area.height)) / zoom);
+  canvas.width = Math.max(1, Math.floor(area.width * zoom * ratio));
+  canvas.height = Math.max(1, Math.floor(area.height * zoom * ratio));
   document.querySelector('#zoom')!.innerHTML = `${Math.round(zoom * 100)}%<svg class="chevron" aria-hidden="true"><use href="#i-chevron"/></svg>`;
   refresh();
 }
@@ -841,7 +841,7 @@ async function exportImage(outputFormat: typeof format = format) {
   if (cropDraft) throw new Error('請先套用或取消裁切。');
   const output = document.createElement('canvas'); output.width = view().width; output.height = view().height; drawScene(output);
   const quality = Number(document.querySelector<HTMLInputElement>('#quality')!.value) / 100;
-  return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片。')), `image/${outputFormat}`, quality));
+  return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片，可能超過此裝置的畫布尺寸或記憶體限制。')), `image/${outputFormat}`, quality));
 }
 async function copyImage() {
   cancelDrag(); closeMenus();

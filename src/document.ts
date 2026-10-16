@@ -1,4 +1,4 @@
-import { arrowPath, expandedCanvas, type Arrow, type Point } from './arrow.ts';
+import { MAX_PIXELS, arrowPath, expandedCanvas, type Arrow, type Point } from './arrow.ts';
 
 export type Annotation = Arrow & {
   kind?: 'arrow' | 'rectangle' | 'roundedRectangle' | 'ellipse' | 'line' | 'text' | 'pen' | 'highlighter';
@@ -7,7 +7,6 @@ export type Annotation = Arrow & {
   strokes?: Point[][];
 };
 export type Background = { src: string; image: HTMLImageElement; x: number; y: number; width: number; height: number };
-export const MAX_SIDE = 4096;
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 export const TOOL_SIZES = [8.977159880834161, 17.954319761668323, 26.931479642502484, 35.908639523336646, 58.35153922542205] as const;
@@ -104,7 +103,7 @@ export function expandedScene(width: number, height: number, item: Annotation) {
   const offsetY = Math.max(0, -Math.floor(bounds.top - margin));
   const nextWidth = Math.max(width, Math.ceil(bounds.right + margin)) + offsetX;
   const nextHeight = Math.max(height, Math.ceil(bounds.bottom + margin)) + offsetY;
-  if (nextWidth > MAX_SIDE || nextHeight > MAX_SIDE) throw new RangeError('畫布延展上限為 4096 × 4096 像素。');
+  if (nextWidth * nextHeight > MAX_PIXELS) throw new RangeError('畫布總像素上限為 5000 萬（寬 × 高）。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
 }
 
@@ -132,7 +131,7 @@ export function imageHeader(bytes: Uint8Array) {
     }
   }
   if (!width || !height || !mime) throw new Error('請選擇可解碼的 PNG 或 JPEG 圖片。');
-  if (width > MAX_SIDE || height > MAX_SIDE) throw new Error('圖片每邊最多 4096 像素。');
+  if (width * height > MAX_PIXELS) throw new Error(`圖片總像素上限為 5000 萬（寬 × 高）；這張圖片為 ${width} × ${height}。`);
   return { width, height, mime };
 }
 export async function loadImage(file: Blob): Promise<Background> {
@@ -172,7 +171,9 @@ export function validateProject(value: unknown): Project {
   const integer = (v: unknown, min: number, max: number) => { const n = number(v, min, max); return Number.isInteger(n) ? n : fail(); };
   const p = object(value);
   if (p.format !== 'markboxy' || p.version !== 2 || typeof p.name !== 'string' || p.name.length > 100) fail();
-  const width = integer(p.width, 1, MAX_SIDE), height = integer(p.height, 1, MAX_SIDE);
+  const width = integer(p.width, 1, MAX_PIXELS), height = integer(p.height, 1, MAX_PIXELS);
+  if (width * height > MAX_PIXELS) fail();
+  const coordinateLimit = Math.max(4096, width, height);
   let crop: Crop | null = null;
   if (p.crop !== null) {
     const c = object(p.crop);
@@ -184,7 +185,7 @@ export function validateProject(value: unknown): Project {
     const a = object(v), s = object(a.start), e = object(a.end);
     if (a.kind !== undefined && !['arrow', 'rectangle', 'roundedRectangle', 'ellipse', 'line', 'text', 'pen', 'highlighter'].includes(String(a.kind))) fail();
     if (typeof a.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(a.color)) fail();
-    const item: Annotation = { kind: a.kind as Annotation['kind'], color: a.color as string, size: number(a.size, 1, 100), start: { x: number(s.x, -MAX_SIDE, MAX_SIDE * 2), y: number(s.y, -MAX_SIDE, MAX_SIDE * 2) }, end: { x: number(e.x, -MAX_SIDE, MAX_SIDE * 2), y: number(e.y, -MAX_SIDE, MAX_SIDE * 2) } };
+    const item: Annotation = { kind: a.kind as Annotation['kind'], color: a.color as string, size: number(a.size, 1, 100), start: { x: number(s.x, -coordinateLimit, coordinateLimit * 2), y: number(s.y, -coordinateLimit, coordinateLimit * 2) }, end: { x: number(e.x, -coordinateLimit, coordinateLimit * 2), y: number(e.y, -coordinateLimit, coordinateLimit * 2) } };
     if (item.kind === 'text') {
       if (typeof a.text !== 'string' || !a.text.trim() || a.text.length > 10000 || item.end.x - item.start.x < 16 || item.end.y <= item.start.y) fail();
       item.text = a.text as string; item.fontSize = number(a.fontSize, 8, 256);
@@ -195,7 +196,7 @@ export function validateProject(value: unknown): Project {
         if (!Array.isArray(stroke) || !stroke.length || (count += stroke.length) > 100000) fail();
         return (stroke as unknown[]).map(point => {
           const p = object(point);
-          return { x: number(p.x, -MAX_SIDE * 3, MAX_SIDE * 3), y: number(p.y, -MAX_SIDE * 3, MAX_SIDE * 3) };
+          return { x: number(p.x, -coordinateLimit * 3, coordinateLimit * 3), y: number(p.y, -coordinateLimit * 3, coordinateLimit * 3) };
         });
       });
     }
@@ -206,7 +207,7 @@ export function validateProject(value: unknown): Project {
   if (p.background !== null) {
     const b = object(p.background);
     if (typeof b.src !== 'string' || b.src.length > Math.ceil(MAX_FILE_BYTES * 4 / 3) + 32 || !/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(b.src)) fail();
-    background = { src: b.src as string, x: integer(b.x, 0, MAX_SIDE), y: integer(b.y, 0, MAX_SIDE), width: integer(b.width, 1, MAX_SIDE), height: integer(b.height, 1, MAX_SIDE) };
+    background = { src: b.src as string, x: integer(b.x, 0, width - 1), y: integer(b.y, 0, height - 1), width: integer(b.width, 1, width), height: integer(b.height, 1, height) };
     if (background.x + background.width > width || background.y + background.height > height) fail();
   }
   return { format: 'markboxy', version: 2, name: p.name as string, width, height, crop, annotations, background };

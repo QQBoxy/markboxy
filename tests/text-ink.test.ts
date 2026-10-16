@@ -12,7 +12,7 @@ test('compound ink keeps separate strokes and dots when moved, and expands for n
   const moved = { ...pen, start: { x: 40, y: 50 } };
   assert.equal(shapePath(moved), 'M40,50L140,70M-10,110l0.001,0');
   assert.ok(expandedScene(100, 100, pen).offsetX > 20);
-  assert.throws(() => expandedScene(4096, 4096, { ...pen, start: { x: 4090, y: 0 } }));
+  assert.throws(() => expandedScene(10000, 5000, { ...pen, start: { x: 9990, y: 100 } }));
   assert.deepEqual([inkAlpha(-100), inkAlpha(0), inkAlpha(500), inkAlpha(1000), inkAlpha(5000)], [.25, .25, .625, 1, 1]);
 });
 
