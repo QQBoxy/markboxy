@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>Resize image round trip check</title>
+<pre id="result">Running…</pre><canvas id="sample"></canvas>
+<script type="module">
+import { loadImage, resizeScene, readProject, shapePath, TOOL_SIZES } from '../src/document.ts';
+const result = document.querySelector('#result');
+try {
+  const image = await loadImage(await (await fetch('../analysis/samples/no-text-A-arrow.png')).blob());
+  const initial = { width:image.width, height:image.height, background:image, crop:{x:21,y:31,width:600,height:400}, arrows:[{ start:{x:100,y:200},end:{x:500,y:300},size:TOOL_SIZES[1],color:'#ff2600' }] };
+  const next = resizeScene(initial,.5);
+  const { image:_, ...background } = next.background;
+  const project = { format:'markboxy',version:2,name:'縮放測試',width:next.width,height:next.height,crop:next.crop,annotations:next.arrows,background };
+  const loaded = await readProject(new Blob([JSON.stringify(project)]));
+  if (loaded.project.width !== project.width || loaded.project.height !== project.height || loaded.project.annotations[0].scale !== project.annotations[0].scale || shapePath(loaded.project.annotations[0]) !== shapePath(project.annotations[0]) || loaded.project.crop.width !== 300 || loaded.project.crop.height !== 200) throw Error('Project changed after round trip');
+  if (loaded.background.width !== next.background.width || loaded.background.image.naturalWidth !== image.width) throw Error('Original pixels or resized display dimensions lost');
+  const canvas = document.querySelector('canvas'); canvas.width=next.width;canvas.height=next.height;
+  const ctx=canvas.getContext('2d');ctx.drawImage(loaded.background.image,0,0,loaded.background.width,loaded.background.height);
+  ctx.fillStyle='#ff2600';ctx.fill(new Path2D(shapePath(loaded.project.annotations[0])));
+  result.textContent = `PASS: original ${image.width} × ${image.height}; resized ${next.width} × ${next.height}; crop ${next.crop.width} × ${next.crop.height}; editable arrow scale ${next.arrows[0].scale}; image bytes and display bounds retained.`;
+} catch(error) { result.textContent='FAIL: '+error.stack; }
+</script>

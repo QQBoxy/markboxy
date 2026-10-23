@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="UTF-8">
+<title>空白文件離開提醒回歸</title>
+<style>iframe{width:100%;height:80vh;border:0}output{display:block}</style>
+<iframe src="/"></iframe><output id="result">檢查中</output>
+<script type="module">
+if (new URL(location.href).searchParams.has('narrow')) document.querySelector('iframe').style.cssText = 'width:360px;height:640px';
+document.querySelector('iframe').addEventListener('load', async event => {
+  const win = event.target.contentWindow, doc = win.document, canvas = doc.querySelector('#canvas');
+  const expectPrompt = (expected, label) => {
+    const leave = new win.Event('beforeunload', { cancelable: true });
+    win.dispatchEvent(leave);
+    if (leave.defaultPrevented !== expected) throw new Error(label);
+  };
+  const trash = doc.querySelector('#trash');
+  let answer = true, prompts = 0;
+  win.confirm = () => { throw new Error('不應開啟系統確認視窗'); };
+  const clear = async () => {
+    trash.focus(); trash.click();
+    const modal = doc.querySelector('#clear-dialog');
+    if (!modal.open) throw new Error('缺少自訂清除視窗');
+    if (doc.activeElement !== modal.querySelector('[value="cancel"]')) throw new Error('預設焦點應在取消');
+    prompts++;
+    const closed = new Promise(resolve => modal.addEventListener('close', resolve, {once:true}));
+    modal.querySelector(answer ? '#confirm-clear' : '[value="cancel"]').click();
+    await closed;
+    await Promise.resolve();
+    if (!answer && doc.activeElement !== trash) throw new Error('取消後應返回垃圾桶');
+  };
+  const expect = (value, label) => { if (!value) throw new Error(label); };
+  const captured = new Set();
+  canvas.setPointerCapture = id => captured.add(id);
+  canvas.hasPointerCapture = id => captured.has(id);
+  canvas.releasePointerCapture = id => captured.delete(id);
+  const send = (type, x, y) => {
+    const r = canvas.getBoundingClientRect();
+    canvas.dispatchEvent(new win.PointerEvent(type, { bubbles: true, pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: r.left + x, clientY: r.top + y }));
+  };
+  const key = key => canvas.dispatchEvent(new win.KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, key }));
+  const draw = () => { send('pointerdown', 100, 100); send('pointerup', 300, 200); };
+  try {
+    expectPrompt(false, '全新空白不提醒');
+    doc.querySelector('[data-color="#1e90ff"]').click();
+    expectPrompt(false, '只改工具色彩不提醒');
+    send('pointerdown', 100, 100); send('pointerup', 100, 100);
+    expectPrompt(false, '空白點擊不提醒');
+    draw(); expectPrompt(true, '新增箭頭要提醒');
+    key('z'); expectPrompt(false, '復原回初始空白不提醒');
+    key('y'); expectPrompt(true, '重做箭頭要提醒');
+    answer = false;
+    await clear();
+    expect(prompts === 1 && canvas.getAttribute('aria-description').startsWith('1 個標註'), '取消清除保留標註');
+    answer = true;
+    await clear();
+    expect(prompts === 2, '一般畫完按垃圾桶必須詢問');
+    expectPrompt(false, '清回初始空白不提醒');
+    key('z'); expectPrompt(true, '復原清空要提醒');
+    doc.querySelector('#blank').click(); expectPrompt(false, '建立新空白不提醒');
+    expect(trash.disabled, '初始空白停用垃圾桶');
+    const right = canvas.getBoundingClientRect().width + 60;
+    send('pointerdown', 100, 100); send('pointerup', right, 100);
+    const grown = doc.querySelector('#dimensions').textContent;
+    expect(grown !== '1130 x 732', '畫布已延展');
+    send('pointerdown', 120, 100); send('pointerup', 120, 100);
+    canvas.dispatchEvent(new win.KeyboardEvent('keydown', { bubbles: true, key: 'Backspace' }));
+    expect(canvas.getAttribute('aria-description').startsWith('0 個標註'), '刪掉唯一標註');
+    expect(doc.querySelector('#dimensions').textContent === grown, '純空白保留延展尺寸');
+    expect(!trash.disabled, '延展空白仍可清除');
+    answer = false; await clear();
+    expect(doc.querySelector('#dimensions').textContent === grown && prompts === 3, '取消保留延展空白');
+    answer = true; await clear();
+    expect(doc.querySelector('#dimensions').textContent === '1130 x 732' && prompts === 4, '確認後恢復預設尺寸');
+    key('z'); expect(doc.querySelector('#dimensions').textContent === grown, '復原清除恢復延展尺寸');
+    key('y'); expect(trash.disabled, '重做清除回預設空白');
+    draw(); expectPrompt(true, '新文件再編輯要提醒');
+    doc.querySelector('#blank').click();
+    const project = { format: 'markboxy', version: 2, name: '空白', width: 1130, height: 732, crop: null, background: null, annotations: [{ kind: 'arrow', start: {x:100,y:100}, end: {x:300,y:200}, size: 17.954319761668323, color: '#ff2600' }] };
+    const transfer = new win.DataTransfer();
+    transfer.items.add(new win.File([JSON.stringify(project)], 'saved.markboxy', {type:'application/json'}));
+    doc.querySelector('#open-file').files = transfer.files;
+    doc.querySelector('#open-file').dispatchEvent(new win.Event('change'));
+    for (let i = 0; i < 100 && !doc.querySelector('#status').textContent.includes('已開啟可編輯文件'); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    if (!doc.querySelector('#status').textContent.includes('已開啟可編輯文件')) throw new Error('測試文件未載入');
+    expectPrompt(false, '既有文件未修改不提醒');
+    await clear(); expectPrompt(true, '清空既有文件仍保護未儲存的刪除');
+    key('z'); expectPrompt(false, '復原回已儲存內容不提醒');
+    document.querySelector('#result').textContent = 'PASS：自訂 Dialog、預設取消焦點、取消返回垃圾桶、尺寸重設、復原／重做及離開保護';
+  } catch (error) { document.querySelector('#result').textContent = `FAIL：${error.message}`; }
+});
+</script>

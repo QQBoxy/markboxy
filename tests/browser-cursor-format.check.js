@@ -10,14 +10,18 @@ export async function checkCursorAndFormat(tab) {
     const shape = await tab.playwright.locator(`#i-${icon}`).evaluate(el => el.innerHTML);
     assert.ok(svg.includes(shape), `cursor includes ${icon} tool icon`);
     assert.ok(svg.includes('x="17" y="2"'), 'icon is above and right of hotspot');
-    const color = await tab.playwright.locator('#color').evaluate(el => el.value);
-    assert.ok(svg.includes(`color="${color}"`), 'tool icon follows current color');
+    const color = icon === 'crop' ? 'black' : await tab.playwright.locator('#color').evaluate(el => el.value);
+    assert.ok(svg.includes(`color="${color}"`), 'crop stays black; drawing tools follow current color');
     assert.ok(svg.includes('stroke="black"'), 'crosshair remains black');
   };
   await checkCursor('arrow');
   for (const color of ['#1e90ff', '#ffffff', '#ff2600']) {
     await tab.playwright.locator('#color-toggle').click();
     await tab.playwright.locator(`[data-color="${color}"]`).click();
+    await checkCursor('arrow');
+    await tab.playwright.locator('#crop-tool').click();
+    await checkCursor('crop');
+    await tab.playwright.locator('#crop-cancel').click();
     await checkCursor('arrow');
   }
   for (const [tool, icon] of [['rectangle', 'shape'], ['roundedRectangle', 'rounded'], ['ellipse', 'ellipse'], ['line', 'line']]) {

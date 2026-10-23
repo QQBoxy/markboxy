@@ -5,7 +5,7 @@ export async function checkIcons(tab) {
   const icons = await tab.playwright.locator('.symbols symbol').evaluateAll(symbols => symbols.map(symbol => ({
     id: symbol.id, viewBox: symbol.getAttribute('viewBox'), geometry: symbol.innerHTML, text: !!symbol.querySelector('text'),
   })));
-  assert.equal(icons.length, 25);
+  assert.equal(icons.length, 27);
   for (const icon of icons) {
     assert.equal(icon.viewBox, '0 0 32 32', `${icon.id} uses the shared grid`);
     assert.ok(icon.geometry.length > 0, `${icon.id} has geometry`);

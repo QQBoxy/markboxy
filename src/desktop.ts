@@ -14,7 +14,6 @@ export async function nativeSave(blob: Blob, name: string) {
   });
   return invoke<boolean>('save_document', { name, data });
 }
-export function askDiscard(message: string): Promise<boolean> { return desktop ? invoke('confirm_discard', { message }) : Promise.resolve(confirm(message)); }
 export async function desktopEvents(capture: () => void, close: () => Promise<boolean>) {
   const window = getCurrentWebviewWindow();
   await window.listen('capture-requested', capture);

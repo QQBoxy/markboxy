@@ -19,7 +19,7 @@ export async function checkIndependentWindows(app) {
   await app.click(Number(editedClose[1]));
   state = await app.getAXState({ emit: false, disableDiffing: true });
   assert.match(state, /尚有未儲存的編輯/);
-  const cancel = state.match(/^\s*(\d+) button Cancel,/m);
+  const cancel = state.match(/^\s*(\d+) button 取消/m);
   assert.ok(cancel);
   await app.click(Number(cancel[1]));
   state = await app.getAXState({ emit: false, disableDiffing: true });

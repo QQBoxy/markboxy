@@ -1,25 +1,28 @@
-import { desktop, nativeOpen, nativeCapture, nativeSave, askDiscard, desktopEvents } from './desktop.ts';
+import { desktop, nativeOpen, nativeCapture, nativeSave, desktopEvents } from './desktop.ts';
 import { arrowPath, type Point } from './arrow.ts';
 
-import { TOOL_SIZES, readStylePreference, shapePath, shapeStroke, expandedScene, loadImage, isInk, inkAlpha, textSize, textFont, textLines, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
+import { TOOL_SIZES, resizeScene, readStylePreference, shapePath, shapeStroke, expandedScene, sceneFrame, loadImage, isInk, inkAlpha, textSize, textFont, textLines, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
 
 let background: Background | null = null;
 let tool: NonNullable<Annotation['kind']> = 'arrow';
 let opening = 0;
 let crop: Crop | null = null;
 let cropDraft: Crop | null = null;
+let resizeScale: number | null = null;
+let resizeInput: 'width' | 'height' | null = null;
 let cropDrag: { id: number; origin: Point; corner: number; before: Crop } | null = null;
 let format: 'png' | 'jpeg' = 'png';
 const exportFormat = document.querySelector<HTMLSelectElement>('#export-format')!;
 let width = 1130;
 let height = 732;
+let renderArea: Crop = { x: 0, y: 0, width, height };
 type Snapshot = { width: number; height: number; background: Background | null; arrows: Annotation[]; crop: Crop | null; name: string };
 const canvas = document.querySelector<HTMLCanvasElement>('#canvas')!;
 document.querySelector('#i-arrow path')!.setAttribute('d', arrowPath({ start: { x: 70, y: 250 }, end: { x: 250, y: 70 }, size: 52 }));
 const toolIcons = { arrow: 'arrow', rectangle: 'shape', roundedRectangle: 'rounded', ellipse: 'ellipse', line: 'line', crop: 'crop', text: 'text', pen: 'pen', highlighter: 'highlighter' };
 const toolCursors = Object.fromEntries(Object.entries(toolIcons).map(([kind, icon]) => {
   const shape = document.querySelector(`#i-${icon}`)!.innerHTML;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M1 28h14M8 21v14" fill="none" stroke="white" stroke-width="3"/><path d="M1 28h14M8 21v14" fill="none" stroke="black"/><svg x="17" y="2" width="22" height="22" viewBox="0 0 32 32" color="TOOL_COLOR">${shape}</svg></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M1 28h14M8 21v14" fill="none" stroke="white" stroke-width="3"/><path d="M1 28h14M8 21v14" fill="none" stroke="black"/><svg x="17" y="2" width="22" height="22" viewBox="0 0 32 32" color="${kind === 'crop' ? 'black' : 'TOOL_COLOR'}">${shape}</svg></svg>`;
   return [kind, `url("data:image/svg+xml,${encodeURIComponent(svg)}") 8 28, crosshair`];
 }));
 const textToolPath = new Path2D(document.querySelector('#i-text path')!.getAttribute('d')!);
@@ -30,6 +33,7 @@ const stage = document.querySelector<HTMLElement>('#stage')!;
 const download = document.querySelector<HTMLAnchorElement>('#download')!;
 const name = document.querySelector<HTMLInputElement>('#name')!;
 const dialog = document.querySelector<HTMLDialogElement>('#export-dialog')!;
+const clearDialog = document.querySelector<HTMLDialogElement>('#clear-dialog')!;
 const exportName = document.querySelector<HTMLInputElement>('#export-name')!;
 const customColor = document.querySelector<HTMLInputElement>('#color')!;
 let arrows: Annotation[] = [];
@@ -116,7 +120,7 @@ function animateInk() {
 function updateTextGeometry(item: Annotation) {
   const ctx = canvas.getContext('2d')!;
   ctx.save(); ctx.font = textFont(item);
-  item.end.y = item.start.y + 8 + textLines(item, s => ctx.measureText(s).width).length * (item.fontSize ?? textSize(item.size)) * 1.4;
+  item.end.y = item.start.y + 8 * (item.scale ?? 1) + textLines(item, s => ctx.measureText(s).width).length * (item.fontSize ?? textSize(item.size)) * 1.4;
   ctx.restore();
 }
 function placeTextEditor() {
@@ -125,7 +129,7 @@ function placeTextEditor() {
   Object.assign(textEditor.style, {
     left: `${(item.start.x - area.x) * zoom}px`, top: `${(item.start.y - area.y) * zoom}px`,
     width: `${item.end.x - item.start.x}px`, height: `${item.end.y - item.start.y}px`,
-    font: textFont(item), lineHeight: '1.4', transform: `scale(${zoom})`,
+    padding: `${4 * (item.scale ?? 1)}px ${8 * (item.scale ?? 1)}px`, font: textFont(item), lineHeight: '1.4', transform: `scale(${zoom})`,
   });
 }
 function finishText(cancel = false) {
@@ -136,7 +140,11 @@ function finishText(cancel = false) {
   if (cancel) { selected = null; restore(before); }
   else {
     try {
-      if (!item.text?.trim()) { arrows.splice(index, 1); selected = null; }
+      if (!item.text?.trim()) {
+        if (!before.arrows[index]) restore(before);
+        else { arrows.splice(index, 1); shrinkCanvas(); }
+        selected = null;
+      }
       else { updateTextGeometry(item); expandFor(item); selected = index; }
       commit(before);
     } catch (error) {
@@ -153,6 +161,7 @@ function beginText(point: Point, index: number | null = null) {
   finishWetInk();
   if (index === null && arrows.length >= 500) { notice('目前文件最多容納 500 個標註。'); return; }
   const before = snapshot();
+  const creating = index === null;
   if (index === null) {
     arrows.push({ kind: 'text', start: point, end: { x: point.x + 240, y: point.y + 40 }, ...style, text: '', fontSize: textSize(style.size) });
     index = arrows.length - 1;
@@ -163,6 +172,12 @@ function beginText(point: Point, index: number | null = null) {
   editingText = { index, before };
   textEditor.value = item.text ?? '';
   updateTextGeometry(item);
+  if (creating) {
+    try { expandFor(item); }
+    catch (error) {
+      editingText = null; selected = null; restore(before); notice(String(error)); return;
+    }
+  }
   textEditor.hidden = false;
   refresh(); textEditor.focus();
 }
@@ -180,17 +195,32 @@ textEditor.addEventListener('keydown', event => {
   }
 });
 document.addEventListener('pointerdown', event => {
-  if (editingText && event.target instanceof Element && !event.target.closest('#text-editor,.rail') && !finishText()) { event.preventDefault(); event.stopImmediatePropagation(); }
+  if (event.button === 0 && event.isPrimary && event.target instanceof Element && event.target.closest('#canvas,#text-editor') && (onEditingTextFrame(position(event)) || onTextIcon(position(event)))) {
+    // A frame drag is still part of the text edit; finishing here deletes an empty draft.
+    event.preventDefault(); event.stopImmediatePropagation(); startDrag(event); return;
+  }
+  if (editingText && event.target instanceof Element && !event.target.closest('#text-editor,.rail')) {
+    const blank = event.button === 0 && event.isPrimary && event.target.matches('#canvas,#workspace,#stage') && hit(position(event)) === null;
+    if (!finishText()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (blank) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      selected = null; refresh(); canvas.focus();
+    }
+  }
 }, true);
+textEditor.addEventListener('pointermove', event => {
+  textEditor.style.cursor = onEditingTextFrame(position(event)) ? 'move' : 'text';
+});
 canvas.addEventListener('dblclick', event => {
+  if (cropDraft) return;
   const index = hit(position(event));
   if (index !== null && arrows[index]!.kind === 'text') { cancelDrag(); beginText(position(event), index); }
 });
-function view(): Crop { return (!cropDraft && crop) || { x: 0, y: 0, width, height }; }
+function view(): Crop { return ((!cropDraft || resizeScale !== null) && crop) || { x: 0, y: 0, width, height }; }
 function drawScene(target: HTMLCanvasElement, editing = false) {
   const ctx = target.getContext('2d');
   if (!ctx) throw new Error('瀏覽器無法建立繪圖畫布，可能超過此裝置的畫布尺寸或記憶體限制。');
-  const area = view();
+  const area = editing ? renderArea : view();
   const scale = target.width / area.width;
   ctx.resetTransform();
   ctx.fillStyle = '#fff';
@@ -202,16 +232,20 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
     ctx.save();
     ctx.fillStyle = arrow.color;
     ctx.shadowColor = 'rgba(0,0,0,0.35)';
-    ctx.shadowBlur = 2 * scale;
-    ctx.shadowOffsetY = 2 * scale;
+    ctx.shadowBlur = 2 * scale * (arrow.scale ?? 1);
+    ctx.shadowOffsetY = 2 * scale * (arrow.scale ?? 1);
     if (arrow.kind === 'text') {
       const fontSize = arrow.fontSize ?? textSize(arrow.size);
       ctx.font = textFont(arrow); ctx.textBaseline = 'alphabetic';
-      ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, fontSize * .1);
+      ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(arrow.scale ?? 1, fontSize * .06);
+      ctx.shadowBlur = scale * (arrow.scale ?? 1); ctx.shadowOffsetY = scale * (arrow.scale ?? 1);
       const lines = textLines(arrow, s => ctx.measureText(s).width);
       lines.forEach((line, i) => {
-        const x = arrow.start.x + 8, y = arrow.start.y + 4 + fontSize * 1.1 + i * fontSize * 1.4;
-        ctx.strokeText(line, x, y); ctx.fillText(line, x, y);
+        const x = arrow.start.x + 8 * (arrow.scale ?? 1), y = arrow.start.y + 4 * (arrow.scale ?? 1) + fontSize * 1.1 + i * fontSize * 1.4;
+        ctx.shadowColor = 'rgba(0,0,0,0.2)';
+        ctx.strokeText(line, x, y);
+        ctx.shadowColor = 'transparent';
+        ctx.fillText(line, x, y);
       });
     } else if (arrow.kind && arrow.kind !== 'arrow') {
       if (isInk(arrow)) {
@@ -219,7 +253,7 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
         ctx.globalAlpha = arrow.kind === 'highlighter' ? .4 : editing && wet?.index === index ? (wet.ended === null ? .25 : inkAlpha(performance.now() - wet.ended)) : 1;
       }
       ctx.strokeStyle = arrow.color;
-      ctx.lineWidth = shapeStroke(arrow.size) * (arrow.kind === 'highlighter' ? 2 : 1);
+      ctx.lineWidth = shapeStroke(arrow.size) * (arrow.scale ?? 1) * (arrow.kind === 'highlighter' ? 2 : 1);
       ctx.lineJoin = 'round';
       ctx.lineCap = 'round';
       ctx.stroke(path);
@@ -246,7 +280,7 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
       }
     }
   });
-  if (editing && cropDraft) {
+  if (editing && cropDraft && resizeScale === null) {
     const c = cropDraft;
     ctx.fillStyle = 'rgba(0,0,0,.45)';
     ctx.beginPath(); ctx.rect(0, 0, width, height); ctx.rect(c.x, c.y, c.width, c.height); ctx.fill('evenodd');
@@ -265,9 +299,30 @@ function drawScene(target: HTMLCanvasElement, editing = false) {
   }
 }
 function refresh() {
+  const area = view();
+  renderArea = area;
+  const active = drag && arrows[drag.index];
+  if (active && !crop && !cropDraft) {
+    try { renderArea = sceneFrame(area, [active]); }
+    catch (error) { notice(String(error)); }
+  }
+  const text = selected === null ? null : arrows[selected];
+  if (!cropDraft && text?.kind === 'text') {
+    // Selection controls belong to the preview, including the icon 30 screen pixels above the frame.
+    const x = Math.min(renderArea.x, text.start.x - 8 / zoom, (text.start.x + text.end.x) / 2 - 13 / zoom);
+    const y = Math.min(renderArea.y, text.start.y - 31 / zoom);
+    renderArea = { x, y, width: Math.max(renderArea.x + renderArea.width, text.end.x + 8 / zoom, (text.start.x + text.end.x) / 2 + 13 / zoom) - x,
+      height: Math.max(renderArea.y + renderArea.height, text.end.y + 8 / zoom) - y };
+  }
+  Object.assign(canvas.style, { left: `${(renderArea.x - area.x) * zoom}px`, top: `${(renderArea.y - area.y) * zoom}px`, width: `${renderArea.width * zoom}px`, height: `${renderArea.height * zoom}px` });
+  // ponytail: cap preview memory and surface dimensions; exports retain the full document size.
+  const ratio = Math.min(devicePixelRatio, 2, Math.min(Math.sqrt(16_000_000 / (renderArea.width * renderArea.height)), 4096 / Math.max(renderArea.width, renderArea.height)) / zoom);
+  const bitmapWidth = Math.max(1, Math.floor(renderArea.width * zoom * ratio)), bitmapHeight = Math.max(1, Math.floor(renderArea.height * zoom * ratio));
+  if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
+  if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
   drawScene(canvas, true);
   placeTextEditor();
-  canvas.style.setProperty('--tool-cursor', toolCursors[cropDraft ? 'crop' : tool]!.replace('TOOL_COLOR', encodeURIComponent(style.color)));
+  workspace.style.setProperty('--tool-cursor', toolCursors[cropDraft ? 'crop' : tool]!.replace('TOOL_COLOR', encodeURIComponent(style.color)));
   canvas.style.cursor = 'var(--tool-cursor)';
   document.querySelector<HTMLElement>('#current-color')!.style.setProperty('--swatch', style.color);
   customColor.value = style.color;
@@ -288,7 +343,7 @@ function refresh() {
   sizeToggle.setAttribute('aria-description', sizeDescription);
   // Expose document state as an accessible description, also useful for keyboard users.
   canvas.setAttribute('aria-description', `${arrows.length} 個標註；${selected === null ? '未選取' : `選取第 ${selected + 1} 個標註`}。`);
-  document.querySelector<HTMLButtonElement>('#trash')!.disabled = arrows.length === 0 && !background;
+  document.querySelector<HTMLButtonElement>('#trash')!.disabled = arrows.length === 0 && !background && !crop && width === 1130 && height === 732;
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tool]')) {
     const active = !cropDraft && button.dataset.tool === tool;
     button.classList.toggle('selected', active);
@@ -304,11 +359,17 @@ function refresh() {
   document.querySelector('#pen-tool')!.setAttribute('aria-pressed', String(penActive));
   document.querySelector('#pen-tool use')!.setAttribute('href', tool === 'highlighter' ? '#i-highlighter' : '#i-pen');
   canvas.dataset.ink = wet ? wet.ended === null ? 'writing' : 'drying' : 'dry';
-  document.querySelector('#dimensions')!.textContent = `${view().width} x ${view().height}`;
+  const dimensions = cropDraft ? (crop ?? { width, height }) : view();
+  document.querySelector('#dimensions')!.textContent = `${dimensions.width} x ${dimensions.height}`;
   document.querySelector('#export-form p')!.textContent = `${view().width} × ${view().height} 像素`;
 }
 function layout() {
   document.querySelector('main')!.classList.toggle('cropping', !!cropDraft);
+  document.querySelector('main')!.classList.toggle('resizing', resizeScale !== null);
+  document.querySelector<HTMLElement>('#resize-footer')!.hidden = resizeScale === null;
+  document.querySelector('#crop-mode-switch')!.setAttribute('aria-checked', String(resizeScale !== null));
+  for (const side of ['width', 'height']) document.querySelector(`#crop-${side}`)!.setAttribute('aria-label', `${resizeScale === null ? '裁切' : '縮放'}${side === 'width' ? '寬度' : '高度'}`);
+  if (resizeScale !== null) { fit = false; zoom = resizeScale; }
   document.querySelector('#crop-tool')!.classList.toggle('selected', !!cropDraft);
   const area = view();
   if (fit) {
@@ -317,10 +378,6 @@ function layout() {
   }
   stage.style.width = `${area.width * zoom}px`;
   stage.style.height = `${area.height * zoom}px`;
-  // ponytail: cap preview memory and keep long, thin preview surfaces within 4096 per side; neither cap rejects or resizes the original image.
-  const ratio = Math.min(devicePixelRatio, 2, Math.min(Math.sqrt(16_000_000 / (area.width * area.height)), 4096 / Math.max(area.width, area.height)) / zoom);
-  canvas.width = Math.max(1, Math.floor(area.width * zoom * ratio));
-  canvas.height = Math.max(1, Math.floor(area.height * zoom * ratio));
   document.querySelector('#zoom')!.innerHTML = `${Math.round(zoom * 100)}%<svg class="chevron" aria-hidden="true"><use href="#i-chevron"/></svg>`;
   refresh();
 }
@@ -391,21 +448,33 @@ document.querySelectorAll('.pin').forEach(button => button.addEventListener('cli
   button.setAttribute('aria-pressed', String(pinned));
 }));
 
-function expandFor(item: Annotation) {
+function translateScene(dx: number, dy: number) {
+  for (const item of arrows) {
+    item.start = { x: item.start.x + dx, y: item.start.y + dy };
+    item.end = { x: item.end.x + dx, y: item.end.y + dy };
+  }
+  if (background) background = { ...background, x: background.x + dx, y: background.y + dy };
+}
+function shrinkCanvas() {
+  if (background && !crop) applyCanvasFrame(sceneFrame(background, arrows));
+}
+function applyCanvasFrame(frame: Crop) {
   const previousHeight = height;
-  const expanded = crop ? { width, height, offsetX: 0, offsetY: 0 } : expandedScene(width, height, item);
-  if (expanded.width !== width || expanded.height !== height) {
-    for (const arrow of arrows) {
-      for (const point of [arrow.start, arrow.end]) { point.x += expanded.offsetX; point.y += expanded.offsetY; }
-    }
-    if (background) background = { ...background, x: background.x + expanded.offsetX, y: background.y + expanded.offsetY };
-    width = expanded.width;
-    height = expanded.height;
+  if (frame.width !== width || frame.height !== height || frame.x !== 0 || frame.y !== 0) {
+    translateScene(-frame.x, -frame.y);
+    width = frame.width;
+    height = frame.height;
     fit = false;
     layout();
-    workspace.scrollLeft += expanded.offsetX * zoom;
-    workspace.scrollTop += Math.max(expanded.offsetY, height - previousHeight) * zoom;
+    workspace.scrollLeft -= frame.x * zoom;
+    workspace.scrollTop += Math.max(-frame.y, height - previousHeight) * zoom;
   }
+}
+function expandFor(item: Annotation) {
+  if (crop) return;
+  if (background) { shrinkCanvas(); return; }
+  const expanded = expandedScene(width, height, item);
+  applyCanvasFrame({ x: -expanded.offsetX, y: -expanded.offsetY, width: expanded.width, height: expanded.height });
 }
 function setStyle(value: Partial<typeof style>, sizeLevel?: number, customColorChoice?: boolean) {
   if (!finishText()) return;
@@ -417,7 +486,7 @@ function setStyle(value: Partial<typeof style>, sizeLevel?: number, customColorC
     try {
       Object.assign(arrows[selected]!, value);
       if (arrows[selected]!.kind === 'text') {
-        if (value.size !== undefined) arrows[selected]!.fontSize = textSize(value.size);
+        if (value.size !== undefined) arrows[selected]!.fontSize = textSize(value.size) * (arrows[selected]!.scale ?? 1);
         updateTextGeometry(arrows[selected]!);
       }
       expandFor(arrows[selected]!);
@@ -446,7 +515,7 @@ customColor.addEventListener('change', () => { if (!pinned) setPanel(null); });
 
 function position(event: MouseEvent): Point {
   const rect = canvas.getBoundingClientRect();
-  const area = view();
+  const area = renderArea;
   return {
     x: area.x + (event.clientX - rect.left) * area.width / rect.width,
     y: area.y + (event.clientY - rect.top) * area.height / rect.height,
@@ -457,6 +526,17 @@ function handles(item: Annotation) {
   if (item.kind === 'text') return [{ x: item.start.x, y: (item.start.y + item.end.y) / 2 }, { x: item.end.x, y: (item.start.y + item.end.y) / 2 }, item.end];
   return !item.kind || item.kind === 'arrow' || item.kind === 'line' ? [item.start, item.end] :
     [item.start, item.end, { x: item.end.x, y: item.start.y }, { x: item.start.x, y: item.end.y }];
+}
+function onTextIcon(point: Point) {
+  const item = selected === null ? null : arrows[selected];
+  return !cropDraft && item?.kind === 'text' && Math.hypot(point.x - (item.start.x + item.end.x) / 2, point.y - item.start.y + 18 / zoom) <= 12 / zoom;
+}
+function onEditingTextFrame(point: Point) {
+  if (!editingText) return false;
+  const item = arrows[editingText.index]!, margin = 6 / zoom;
+  return handles(item).some(p => Math.hypot(p.x - point.x, p.y - point.y) <= 12 / zoom) ||
+    (point.x >= item.start.x - margin && point.x <= item.end.x + margin && point.y >= item.start.y - margin && point.y <= item.end.y + margin &&
+      Math.min(Math.abs(point.x - item.start.x), Math.abs(point.x - item.end.x), Math.abs(point.y - item.start.y), Math.abs(point.y - item.end.y)) <= margin);
 }
 function hit(point: Point) {
   const ctx = canvas.getContext('2d')!;
@@ -470,7 +550,7 @@ function hit(point: Point) {
     const path = new Path2D(shapePath(item));
     if (item.kind === 'text' && ctx.isPointInPath(path, point.x, point.y)) { result = index; break; }
     const isArrow = !arrows[index]!.kind || arrows[index]!.kind === 'arrow';
-    ctx.lineWidth = (isArrow ? 0 : shapeStroke(item.size) * (item.kind === 'highlighter' ? 2 : 1)) + 8 / zoom;
+    ctx.lineWidth = (isArrow ? 0 : shapeStroke(item.size) * (item.scale ?? 1) * (item.kind === 'highlighter' ? 2 : 1)) + 8 / zoom;
     if ((isArrow && ctx.isPointInPath(path, point.x, point.y)) || ctx.isPointInStroke(path, point.x, point.y)) {
       result = index;
       break;
@@ -479,18 +559,25 @@ function hit(point: Point) {
   ctx.restore();
   return result;
 }
-canvas.addEventListener('pointerdown', event => {
+function startDrag(event: PointerEvent) {
   if (cropDraft) return;
   if (event.button !== 0 || !event.isPrimary || drag) return;
   closeMenus();
   if (!pinned) setPanel(null);
   document.querySelector<HTMLElement>('#notification')!.hidden = true;
   const point = position(event);
+  const textFrame = onEditingTextFrame(point);
+  const textIcon = onTextIcon(point);
   const onHandle = selected !== null && handles(arrows[selected]!).some(p => Math.hypot(p.x - point.x, p.y - point.y) <= 12 / zoom);
-  if (tool === 'text' && !onHandle && hit(point) === null) { event.preventDefault(); beginText(point); return; }
+  if (tool === 'text' && !textFrame && !textIcon && !onHandle && hit(point) === null) {
+    event.preventDefault();
+    if (selected !== null) { selected = null; refresh(); canvas.focus(); }
+    else beginText(point);
+    return;
+  }
   const inkHit = hit(point);
   const selectsInk = inkHit !== null && isInk(arrows[inkHit]!) && wet?.index !== inkHit;
-  if ((tool === 'pen' || tool === 'highlighter') && !selectsInk) {
+  if ((tool === 'pen' || tool === 'highlighter') && !selectsInk && !textIcon) {
     if (wet && arrows[wet.index]?.kind !== tool) finishWetInk();
     if (wet && arrows[wet.index]!.strokes!.length >= 2000) finishWetInk();
     if (!wet) {
@@ -511,12 +598,12 @@ canvas.addEventListener('pointerdown', event => {
   const before = snapshot();
   const previousSelection = selected;
   let target: 'new' | 'move' | 'start' | 'end' | 'ne' | 'sw' = 'move';
-  if (selected !== null) {
+  if (selected !== null && !textIcon) {
     const arrow = arrows[selected]!;
     const distances = handles(arrow).map(p => Math.hypot(p.x - point.x, p.y - point.y));
     if (Math.min(...distances) <= 12 / zoom) target = (['start', 'end', 'ne', 'sw'] as const)[distances.indexOf(Math.min(...distances))]!;
   }
-  if (target === 'move') selected = hit(point);
+  if (target === 'move' && !textIcon) selected = textFrame ? editingText!.index : hit(point);
   if (selected === null) {
     if (arrows.length >= 500) { notice('目前文件最多容納 500 個標註。'); return; }
     arrows.push({ kind: tool, start: point, end: point, ...style });
@@ -527,7 +614,7 @@ canvas.addEventListener('pointerdown', event => {
   }
   drag = { pointerId: event.pointerId, target, index: selected, origin: point, before, previousSelection, moved: false };
   if (target === 'new') selected = null;
-  if (target !== 'new') {
+  if (target !== 'new' && !editingText) {
     const index = selected!;
     holdTimer = setTimeout(() => {
       cancelDrag();
@@ -537,6 +624,14 @@ canvas.addEventListener('pointerdown', event => {
   canvas.setPointerCapture(event.pointerId);
   canvas.focus();
   refresh();
+}
+canvas.addEventListener('pointerdown', startDrag);
+workspace.addEventListener('pointerdown', event => {
+  if (event.target !== workspace && event.target !== stage) return;
+  if (event.button !== 0 || !event.isPrimary || space || cropDraft) return;
+  if (crop) { notice('請先復原裁切，才能在畫布外新增標註。'); return; }
+  event.preventDefault();
+  startDrag(event);
 });
 function move(event: PointerEvent) {
   if (!drag || drag.pointerId !== event.pointerId) return;
@@ -569,12 +664,12 @@ function move(event: PointerEvent) {
     arrow.end = { x: original.end.x + tx, y: original.end.y + ty };
   } else if (arrow.kind === 'text') {
     const original = drag.before.arrows[drag.index]!;
-    if (drag.target === 'start') arrow.start.x = Math.min(point.x, arrow.end.x - 32);
-    else if (drag.target === 'end') arrow.end.x = Math.max(arrow.start.x + 32, point.x);
+    if (drag.target === 'start') arrow.start.x = Math.min(point.x, arrow.end.x - 32 * (arrow.scale ?? 1));
+    else if (drag.target === 'end') arrow.end.x = Math.max(arrow.start.x + 32 * (arrow.scale ?? 1), point.x);
     else {
       const factor = Math.max(.1, (point.x - original.start.x) / (original.end.x - original.start.x));
-      arrow.fontSize = Math.max(8, Math.min(256, (original.fontSize ?? textSize(original.size)) * factor));
-      arrow.end.x = arrow.start.x + Math.max(32, (original.end.x - original.start.x) * arrow.fontSize / (original.fontSize ?? textSize(original.size)));
+      arrow.fontSize = Math.max(8 * (arrow.scale ?? 1), Math.min(256 * (arrow.scale ?? 1), (original.fontSize ?? textSize(original.size)) * factor));
+      arrow.end.x = arrow.start.x + Math.max(32 * (arrow.scale ?? 1), (original.end.x - original.start.x) * arrow.fontSize / (original.fontSize ?? textSize(original.size)));
     }
     updateTextGeometry(arrow);
   } else {
@@ -599,7 +694,7 @@ function move(event: PointerEvent) {
 }
 canvas.addEventListener('pointermove', event => {
   if (drag) move(event);
-  else canvas.style.cursor = space ? 'grab' : cropDraft || hit(position(event)) === null ? 'var(--tool-cursor)' : 'move';
+  else canvas.style.cursor = space ? 'grab' : cropDraft || (!onEditingTextFrame(position(event)) && !onTextIcon(position(event)) && hit(position(event)) === null) ? 'var(--tool-cursor)' : 'move';
 });
 function finishDrag(event: PointerEvent) {
   if (!drag || drag.pointerId !== event.pointerId) return;
@@ -627,7 +722,7 @@ function finishDrag(event: PointerEvent) {
   } else {
     try {
       expandFor(arrows[index]!);
-      commit(before);
+      if (!editingText) commit(before);
     } catch (error) {
       selected = previousSelection;
       restore(before);
@@ -637,6 +732,7 @@ function finishDrag(event: PointerEvent) {
   drag = null;
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   refresh();
+  if (editingText) textEditor.focus();
 }
 canvas.addEventListener('pointerup', finishDrag);
 function cancelDrag() {
@@ -652,6 +748,7 @@ function cancelDrag() {
   selected = previousSelection;
   if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
   refresh();
+  if (editingText) textEditor.focus();
 }
 canvas.addEventListener('pointercancel', cancelDrag);
 canvas.addEventListener('lostpointercapture', event => {
@@ -687,7 +784,7 @@ function clear(newName?: string) {
   arrows = [];
   background = null;
   crop = null;
-  cropDraft = null;
+  cropDraft = null; resizeScale = null; resizeInput = null;
   document.querySelector<HTMLElement>('#crop-bar')!.hidden = true;
   document.querySelector('#crop-tool')!.setAttribute('aria-pressed', 'false');
   width = 1130;
@@ -698,21 +795,53 @@ function clear(newName?: string) {
   commit(before);
   if (newName !== undefined) { savedState = snapshot(); changed = false; }
   refresh();
+  canvas.focus();
 }
 document.querySelector('#blank')!.addEventListener('click', () => {
   clear('空白');
   closeMenus();
   canvas.focus();
 });
-document.querySelector('#trash')!.addEventListener('click', () => clear());
+async function askConfirmation(title: string, description: string, note: string, action: string, icon: string) {
+  if (clearDialog.open) return false;
+  closeMenus();
+  const previousFocus = document.activeElement;
+  document.querySelector('#clear-title')!.textContent = title;
+  document.querySelector('#clear-description')!.textContent = description;
+  document.querySelector('#clear-note')!.textContent = note;
+  for (const use of clearDialog.querySelectorAll('use')) use.setAttribute('href', `#i-${icon}`);
+  document.querySelector('#confirm-clear span')!.textContent = action;
+  clearDialog.returnValue = 'cancel';
+  const closed = new Promise<void>(resolve => clearDialog.addEventListener('close', () => resolve(), { once: true }));
+  clearDialog.showModal();
+  await closed;
+  if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+  return clearDialog.returnValue === 'clear';
+}
+document.querySelector('#trash')!.addEventListener('click', async () => {
+  if (clearDialog.open) return;
+  cancelDrag();
+  if (!finishText()) return;
+  finishWetInk();
+  const before = snapshot();
+  if (await askConfirmation('清除畫布？', '所有標註與底圖將移除，畫布會恢復預設大小。', '清除後仍可使用「復原」還原。', '清除畫布', 'trash')) {
+    if (!matches(before)) { notice('文件已變更，請重新按垃圾桶確認清除。'); return; }
+    clear();
+  }
+});
 function deleteSelected() {
   cancelDrag();
   if (!finishText()) return;
   finishWetInk();
   if (selected === null) return;
   const before = snapshot();
-  arrows.splice(selected, 1);
+  const index = selected;
+  arrows.splice(index, 1);
   selected = null;
+  try { shrinkCanvas(); }
+  catch (error) {
+    restore(before); selected = index; refresh(); notice(`${String(error)} 原文件仍保留。`); return;
+  }
   commit(before);
   refresh();
   document.querySelector<HTMLElement>('#notification')!.hidden = true;
@@ -764,12 +893,12 @@ async function openFile(file: File) {
     const loaded = /\.markboxy$/i.test(file.name) ? await readProject(file) : null;
     const next = loaded ? loaded.background : await loadImage(file);
     if (request !== opening) return;
-    if (hasUnsavedChanges() && !await askDiscard('開啟檔案會取代目前文件。尚未儲存的內容仍可用復原還原；要繼續嗎？')) return;
+    if (hasUnsavedChanges() && !await askConfirmation('取代目前文件？', '開啟或貼上圖片會取代目前文件，尚有未儲存的編輯。', '取代後仍可使用「復原」還原目前內容。', '取代文件', 'folder')) return;
     if (request !== opening) return;
     cancelDrag(); closeMenus();
     const before = snapshot();
     undo.length = 0; redo.length = 0;
-    background = next; width = loaded?.project.width ?? next!.width; height = loaded?.project.height ?? next!.height; arrows = loaded?.project.annotations ?? []; crop = loaded?.project.crop ?? null; cropDraft = null; document.querySelector<HTMLElement>('#crop-bar')!.hidden = true; selected = null; fit = true;
+    background = next; width = loaded?.project.width ?? next!.width; height = loaded?.project.height ?? next!.height; arrows = loaded?.project.annotations ?? []; crop = loaded?.project.crop ?? null; cropDraft = null; resizeScale = null; resizeInput = null; document.querySelector<HTMLElement>('#crop-bar')!.hidden = true; selected = null; fit = true;
     name.value = loaded?.project.name ?? (file.name.replace(/\.[^.]+$/, '').slice(0, 100) || '空白');
     name.style.width = `${Math.min(240, Math.max(28, name.value.length * 12))}px`;
     layout(); commit(before); refresh(); canvas.focus();
@@ -798,6 +927,7 @@ function resizeName() { name.style.width = `${Math.min(240, Math.max(28, name.va
 name.addEventListener('input', () => { resizeName(); changed = true; revision++; invalidateDownload(); });
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-zoom]')) {
   button.addEventListener('click', () => {
+    if (resizeScale !== null) { if (button.dataset.zoom !== 'fit') setResizeScale(Number(button.dataset.zoom)); closeMenus(); return; }
     fit = button.dataset.zoom === 'fit';
     if (!fit) zoom = Number(button.dataset.zoom);
     closeMenus();
@@ -822,7 +952,7 @@ exportFormat.addEventListener('change', () => setFormat(exportFormat.value as ty
 function exportPNG() {
   if (!finishText()) throw new Error('請先完成文字編輯。');
   finishWetInk();
-  if (cropDraft) throw new Error('請先套用或取消裁切。');
+  if (cropDraft) throw new Error('請先套用或取消裁切／縮放。');
   const output = document.createElement('canvas');
   output.width = view().width;
   output.height = view().height;
@@ -838,7 +968,7 @@ function filename(value = name.value, extension = format === 'jpeg' ? 'jpg' : 'p
 async function exportImage(outputFormat: typeof format = format) {
   if (!finishText()) throw new Error('請先完成文字編輯。');
   finishWetInk();
-  if (cropDraft) throw new Error('請先套用或取消裁切。');
+  if (cropDraft) throw new Error('請先套用或取消裁切／縮放。');
   const output = document.createElement('canvas'); output.width = view().width; output.height = view().height; drawScene(output);
   const quality = Number(document.querySelector<HTMLInputElement>('#quality')!.value) / 100;
   return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片，可能超過此裝置的畫布尺寸或記憶體限制。')), `image/${outputFormat}`, quality));
@@ -853,7 +983,7 @@ async function copyImage() {
   } catch (error) { notice(`複製失敗：${error instanceof Error ? error.message : String(error)}`); }
 }
 function textClipboardTarget(target: EventTarget | null) {
-  return dialog.open || (target instanceof Element && !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])'));
+  return dialog.open || clearDialog.open || (target instanceof Element && !!target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])'));
 }
 document.addEventListener('copy', event => {
   if (textClipboardTarget(event.target) || getSelection()?.toString()) return;
@@ -866,7 +996,7 @@ async function saveProject() {
   cancelDrag(); closeMenus();
   if (!finishText()) return;
   finishWetInk();
-  if (cropDraft) { notice('請先套用或取消裁切，再儲存文件。'); return; }
+  if (cropDraft) { notice('請先套用或取消裁切／縮放，再儲存文件。'); return; }
   const project: Project = { format: 'markboxy', version: 2, name: name.value, width, height, crop, annotations: arrows, background: background && { src: background.src, x: background.x, y: background.y, width: background.width, height: background.height } };
   const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
   const savedRevision = revision;
@@ -881,7 +1011,7 @@ document.querySelector('#save-project')!.addEventListener('click', saveProject);
 function showExport() {
   cancelDrag();
   closeMenus();
-  if (cropDraft) { notice('請先套用或取消裁切，再匯出。'); return; }
+  if (cropDraft) { notice('請先套用或取消裁切／縮放，再匯出。'); return; }
   exportName.value = name.value.trim() || '空白';
   if (!dialog.open) dialog.showModal();
 }
@@ -915,7 +1045,7 @@ document.addEventListener('keydown', event => {
   // Native editing shortcuts keep canvas focus; only Tab navigation needs the outer focus ring.
   if (event.key === 'Tab') canvas.dataset.tabFocus = '';
   else if (document.activeElement === canvas) delete canvas.dataset.tabFocus;
-  if (dialog.open || event.isComposing) return;
+  if (dialog.open || clearDialog.open || event.isComposing) return;
   if (event.key === 'Escape') {
     if (drag) cancelDrag();
     else if (cropDraft) finishCrop(false);
@@ -946,6 +1076,48 @@ document.addEventListener('keydown', event => {
 window.addEventListener('beforeunload', event => {
   if (hasUnsavedChanges() && !desktop) { event.preventDefault(); event.returnValue = ''; }
 });
+function maximumResizeScale() {
+  // ponytail: the native device-dependent cap is not fully recovered; use its observed 190% ceiling plus our existing 50 MP memory bound.
+  return Math.min(1.9, Math.sqrt(50_000_000 / (width * height)));
+}
+function setResizeScale(value: number) {
+  if (resizeScale === null || !Number.isFinite(value)) return;
+  resizeScale = Math.max(.1, Math.min(maximumResizeScale(), value));
+  resizeInput = null;
+  const area = crop ?? { width, height };
+  for (const side of ['width', 'height'] as const) document.querySelector<HTMLInputElement>(`#crop-${side}`)!.value = String(Math.max(1, Math.floor(area[side] * resizeScale)));
+  const slider = document.querySelector<HTMLInputElement>('#resize-scale')!;
+  slider.max = String(maximumResizeScale()); slider.value = String(resizeScale);
+  slider.setAttribute('aria-valuetext', `${Math.round(resizeScale * 100)}%`);
+  layout();
+  workspace.scrollLeft = Math.max(0, (workspace.scrollWidth - workspace.clientWidth) / 2);
+  workspace.scrollTop = Math.max(0, (workspace.scrollHeight - workspace.clientHeight) / 2);
+}
+function readResizeSize() {
+  const area = crop ?? { width, height };
+  resizeInput ??= (['width', 'height'] as const).find(side => Number(document.querySelector<HTMLInputElement>(`#crop-${side}`)!.value) !== Math.max(1, Math.floor(area[side] * resizeScale!))) ?? null;
+  if (!resizeInput) return true;
+  const value = Number(document.querySelector<HTMLInputElement>(`#crop-${resizeInput}`)!.value);
+  const factor = value / area[resizeInput];
+  if (!Number.isInteger(value) || value < 1 || factor < .1 || factor > maximumResizeScale() + 1e-10) {
+    notice(`縮放尺寸須為原尺寸 10%～${Math.floor(maximumResizeScale() * 100)}% 範圍內的正整數。`); return false;
+  }
+  setResizeScale(factor); return true;
+}
+function switchCropMode(resize: boolean) {
+  if (!cropDraft) return;
+  cropDrag = null; resizeInput = null;
+  cropDraft = { ...(crop ?? { x: 0, y: 0, width, height }) };
+  resizeScale = resize ? 1 : null;
+  if (resize) setResizeScale(1);
+  else { fit = true; layout(); updateCrop(); }
+  canvas.focus();
+}
+document.querySelector('#crop-mode-switch')!.addEventListener('click', () => switchCropMode(resizeScale === null));
+document.querySelector('#choose-crop')!.addEventListener('click', () => switchCropMode(false));
+document.querySelector('#choose-resize')!.addEventListener('click', () => switchCropMode(true));
+document.querySelector<HTMLInputElement>('#resize-scale')!.addEventListener('input', event => setResizeScale(Number((event.target as HTMLInputElement).value)));
+for (const [id, step] of [['resize-decrease', -.1], ['resize-increase', .1]] as const) document.querySelector(`#${id}`)!.addEventListener('click', () => setResizeScale((resizeScale ?? 1) + step));
 function cropCorners(c: Crop) {
   return [{ x: c.x, y: c.y }, { x: c.x + c.width / 2, y: c.y }, { x: c.x + c.width, y: c.y }, { x: c.x + c.width, y: c.y + c.height / 2 }, { x: c.x + c.width, y: c.y + c.height }, { x: c.x + c.width / 2, y: c.y + c.height }, { x: c.x, y: c.y + c.height }, { x: c.x, y: c.y + c.height / 2 }];
 }
@@ -958,7 +1130,14 @@ function updateCrop() {
 function finishCrop(apply: boolean) {
   if (!cropDraft) return;
   const before = snapshot();
-  if (apply) crop = { ...cropDraft };
+  if (apply) {
+    if (resizeScale !== null) {
+      try { ({ width, height, background, arrows, crop } = resizeScene(snapshot(), resizeScale)); }
+      catch (error) { notice(String(error)); return; }
+    } else crop = { ...cropDraft };
+  }
+  if (resizeScale !== null) fit = true;
+  resizeScale = null; resizeInput = null;
   cropDraft = null; cropDrag = null;
   document.querySelector<HTMLElement>('#crop-bar')!.hidden = true;
   document.querySelector('#crop-tool')!.setAttribute('aria-pressed', 'false');
@@ -968,6 +1147,7 @@ document.querySelector('#crop-tool')!.addEventListener('click', () => {
   cancelDrag();
   if (!finishText()) return;
   finishWetInk(); closeMenus(); setPanel(null); selected = null;
+  resizeScale = null; resizeInput = null;
   cropDraft = { ...(crop ?? { x: 0, y: 0, width, height }) };
   document.querySelector<HTMLElement>('#crop-bar')!.hidden = false;
   document.querySelector('#crop-tool')!.setAttribute('aria-pressed', 'true');
@@ -976,6 +1156,7 @@ document.querySelector('#crop-tool')!.addEventListener('click', () => {
 document.querySelector('#crop-cancel')!.addEventListener('click', () => finishCrop(false));
 function readCropSize() {
   if (!cropDraft) return false;
+  if (resizeScale !== null) return readResizeSize();
   const w = Number(document.querySelector<HTMLInputElement>('#crop-width')!.value);
   const h = Number(document.querySelector<HTMLInputElement>('#crop-height')!.value);
   if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > width - cropDraft.x || h > height - cropDraft.y) {
@@ -986,10 +1167,12 @@ function readCropSize() {
 }
 document.querySelector('#crop-apply')!.addEventListener('click', () => { if (readCropSize()) finishCrop(true); });
 for (const side of ['width', 'height'] as const) {
-  document.querySelector<HTMLInputElement>(`#crop-${side}`)!.addEventListener('change', () => { if (readCropSize()) updateCrop(); });
+  document.querySelector<HTMLInputElement>(`#crop-${side}`)!.addEventListener('change', () => { if (readCropSize()) { if (resizeScale === null) updateCrop(); } });
+  document.querySelector<HTMLInputElement>(`#crop-${side}`)!.addEventListener('blur', () => { if (resizeScale !== null) readResizeSize(); });
+  document.querySelector<HTMLInputElement>(`#crop-${side}`)!.addEventListener('input', () => { if (resizeScale !== null) resizeInput = side; });
 }
 canvas.addEventListener('pointerdown', event => {
-  if (!cropDraft || event.button !== 0 || !event.isPrimary) return;
+  if (!cropDraft || resizeScale !== null || event.button !== 0 || !event.isPrimary) return;
   event.stopImmediatePropagation(); event.preventDefault();
   const point = position(event), corners = cropCorners(cropDraft);
   let corner = corners.findIndex(p => Math.hypot(p.x - point.x, p.y - point.y) <= 14 / zoom);
@@ -1030,12 +1213,12 @@ let space = false;
 let pan: { id: number; x: number; y: number; left: number; top: number } | null = null;
 document.addEventListener('keydown', event => {
   if (event.code === 'Space' && !event.ctrlKey && !event.metaKey && !event.altKey && document.activeElement === canvas) { space = true; event.preventDefault(); canvas.style.cursor = 'grab'; }
-  if (event.key === 'Enter' && cropDraft && document.activeElement === canvas) { event.preventDefault(); finishCrop(true); }
+  if (event.key === 'Enter' && cropDraft && document.activeElement === canvas) { event.preventDefault(); if (readCropSize()) finishCrop(true); }
 });
 document.addEventListener('keyup', event => { if (event.code === 'Space') { space = false; canvas.style.cursor = 'var(--tool-cursor)'; } });
 window.addEventListener('blur', () => { space = false; pan = null; });
 canvas.addEventListener('pointerdown', event => {
-  if (cropDraft || (!space && event.button !== 1)) return;
+  if ((cropDraft && resizeScale === null) || (!space && event.button !== 1)) return;
   event.stopImmediatePropagation(); event.preventDefault();
   pan = { id: event.pointerId, x: event.clientX, y: event.clientY, left: workspace.scrollLeft, top: workspace.scrollTop };
   canvas.setPointerCapture(event.pointerId); canvas.style.cursor = 'grabbing';
@@ -1055,13 +1238,13 @@ if (desktop) {
   const screenButton = document.querySelector<HTMLButtonElement>('#capture-screen')!;
   captureButton.disabled = screenButton.disabled = false;
   async function capture(fullScreen = false) {
-    if (dialog.open || cropDraft) { notice('請先關閉匯出視窗或完成裁切，再進行截圖。'); return; }
+    if (dialog.open || clearDialog.open || cropDraft) { notice('請先關閉對話視窗或完成裁切／縮放，再進行截圖。'); return; }
     closeMenus();
     try { const file = await nativeCapture(fullScreen); if (file) await openFile(file); }
     catch (error) { notice(String(error)); }
   }
   captureButton.addEventListener('click', () => void capture());
   screenButton.addEventListener('click', () => void capture(true));
-  void desktopEvents(() => void capture(), async () => !hasUnsavedChanges() || await askDiscard('尚有未儲存的編輯。確定關閉 Markboxy 嗎？')).catch(error => notice(`無法連接桌面事件：${String(error)}`));
+  void desktopEvents(() => void capture(), async () => !hasUnsavedChanges() || await askConfirmation('關閉這份文件？', '尚有未儲存的編輯，關閉後將無法還原。', '若要保留目前內容，請先取消並儲存文件。', '關閉文件', 'close')).catch(error => notice(`無法連接桌面事件：${String(error)}`));
 }
 layout();

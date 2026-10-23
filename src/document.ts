@@ -36,9 +36,9 @@ export function textSize(size: number) {
   const distances = TOOL_SIZES.map(s => Math.abs(s - size));
   return sizes[distances.indexOf(Math.min(...distances))]!;
 }
-export const textFont = (item: Annotation) => `700 ${item.fontSize ?? textSize(item.size)}px Arial, sans-serif`;
+export const textFont = (item: Annotation) => `400 ${item.fontSize ?? textSize(item.size)}px Arial, sans-serif`;
 export function textLines(item: Annotation, measure: (text: string) => number): string[] {
-  const maxWidth = Math.max(1, item.end.x - item.start.x - 16);
+  const maxWidth = Math.max(item.scale ?? 1, item.end.x - item.start.x - 16 * (item.scale ?? 1));
   const result: string[] = [];
   for (const paragraph of (item.text ?? '').split('\n')) {
     let line = '';
@@ -80,24 +80,24 @@ export function shapePath(item: Annotation): string {
     if (!stroke.length) return '';
     const points = stroke.map(p => `${item.start.x + p.x},${item.start.y + p.y}`);
     // A tiny segment gives a single click the same round cap as a normal stroke.
-    return `M${points[0]}${stroke.length === 1 ? `l0.001,0` : `L${points.slice(1).join('L')}`}`;
+    return `M${points[0]}${stroke.length === 1 ? `l${.001 * (item.scale ?? 1)},0` : `L${points.slice(1).join('L')}`}`;
   }).join('');
   const { start: a, end: b } = item;
   if (![a.x, a.y, b.x, b.y, item.size].every(Number.isFinite) || item.size <= 0) throw new RangeError('無效的圖形座標。');
   const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), w = Math.abs(a.x - b.x), h = Math.abs(a.y - b.y);
-  if (item.kind === 'line') return Math.hypot(w, h) < .01 ? '' : `M${a.x},${a.y}L${b.x},${b.y}`;
-  if (w < .01 || h < .01) return '';
+  if (item.kind === 'line') return Math.hypot(w, h) < .01 * (item.scale ?? 1) ? '' : `M${a.x},${a.y}L${b.x},${b.y}`;
+  if (w < .01 * (item.scale ?? 1) || h < .01 * (item.scale ?? 1)) return '';
   if (item.kind === 'rectangle' || item.kind === 'text') return `M${x},${y}h${w}v${h}h${-w}Z`;
   if (item.kind === 'roundedRectangle') {
     // ponytail: fixed 12px radius clamped to the box; revisit with measured original corner samples.
-    const r = Math.min(12, w / 2, h / 2);
+    const r = Math.min(12 * (item.scale ?? 1), w / 2, h / 2);
     return `M${x+r},${y}h${w-2*r}a${r},${r} 0 0 1 ${r},${r}v${h-2*r}a${r},${r} 0 0 1 ${-r},${r}h${2*r-w}a${r},${r} 0 0 1 ${-r},${-r}v${2*r-h}a${r},${r} 0 0 1 ${r},${-r}Z`;
   }
   return `M${x},${y + h / 2}a${w / 2},${h / 2} 0 1 0 ${w},0a${w / 2},${h / 2} 0 1 0 ${-w},0Z`;
 }
 export function expandedScene(width: number, height: number, item: Annotation) {
-  if (!item.kind || item.kind === 'arrow') return expandedCanvas(width, height, item);
-  const margin = item.kind === 'text' ? 4 : shapeStroke(item.size) * (item.kind === 'highlighter' ? 1 : .5);
+  if (!item.kind || item.kind === 'arrow') return expandedCanvas(width, height, item, 6 * (item.scale ?? 1));
+  const margin = (item.kind === 'text' ? 4 : shapeStroke(item.size) * (item.kind === 'highlighter' ? 1 : .5) + (isInk(item) ? 0 : 6)) * (item.scale ?? 1);
   const bounds = annotationBounds(item);
   const offsetX = Math.max(0, -Math.floor(bounds.left - margin));
   const offsetY = Math.max(0, -Math.floor(bounds.top - margin));
@@ -105,6 +105,17 @@ export function expandedScene(width: number, height: number, item: Annotation) {
   const nextHeight = Math.max(height, Math.ceil(bounds.bottom + margin)) + offsetY;
   if (nextWidth * nextHeight > MAX_PIXELS) throw new RangeError('畫布總像素上限為 5000 萬（寬 × 高）。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
+}
+
+/** Union annotations with the retained canvas, without changing document coordinates. */
+export function sceneFrame(base: Crop, items: Annotation[]): Crop {
+  let frame = { ...base };
+  for (const item of items) {
+    const local = { ...item, start: { x: item.start.x - frame.x, y: item.start.y - frame.y }, end: { x: item.end.x - frame.x, y: item.end.y - frame.y } };
+    const expanded = expandedScene(frame.width, frame.height, local);
+    frame = { x: frame.x - expanded.offsetX, y: frame.y - expanded.offsetY, width: expanded.width, height: expanded.height };
+  }
+  return frame;
 }
 
 /** Read dimensions before decoding so oversized compressed images never reach the decoder. */
@@ -164,6 +175,25 @@ export type Project = {
   crop: Crop | null; annotations: Annotation[];
   background: Omit<Background, 'image'> | null;
 };
+/** Resize document coordinates and visual weights together, retaining editable annotations. */
+export function resizeScene<T extends { width: number; height: number; crop: Crop | null; background: Background | null; arrows: Annotation[] }>(scene: T, factor: number): T {
+  const width = Math.max(1, Math.round(scene.width * factor)), height = Math.max(1, Math.round(scene.height * factor));
+  if (!Number.isFinite(factor) || factor <= 0 || width * height > MAX_PIXELS) throw new RangeError('縮放尺寸超過 5000 萬像素上限。');
+  const point = (p: Point) => ({ x: p.x * factor, y: p.y * factor });
+  const rect = (r: Crop): Crop => {
+    const x = Math.min(width - 1, Math.round(r.x * factor)), y = Math.min(height - 1, Math.round(r.y * factor));
+    return { x, y, width: Math.max(1, Math.min(width - x, Math.round(r.width * factor))), height: Math.max(1, Math.min(height - y, Math.round(r.height * factor))) };
+  };
+  return { ...scene, width, height, crop: scene.crop && rect(scene.crop),
+    background: scene.background && { ...scene.background, ...rect(scene.background) },
+    arrows: scene.arrows.map(item => {
+      const scale = (item.scale ?? 1) * factor;
+      if (scale < .000001 || scale > 1000000) throw new RangeError('標註已達可縮放範圍，請減少縮放幅度。');
+      return { ...item, start: point(item.start), end: point(item.end), scale,
+        ...(item.kind === 'text' ? { fontSize: (item.fontSize ?? textSize(item.size)) * factor } : {}),
+        ...(item.strokes ? { strokes: item.strokes.map(stroke => stroke.map(point)) } : {}) };
+    }) };
+}
 export function validateProject(value: unknown): Project {
   const fail = (): never => { throw new Error('文件格式無效或版本不支援，原文件仍保留。'); };
   const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : fail();
@@ -186,9 +216,10 @@ export function validateProject(value: unknown): Project {
     if (a.kind !== undefined && !['arrow', 'rectangle', 'roundedRectangle', 'ellipse', 'line', 'text', 'pen', 'highlighter'].includes(String(a.kind))) fail();
     if (typeof a.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(a.color)) fail();
     const item: Annotation = { kind: a.kind as Annotation['kind'], color: a.color as string, size: number(a.size, 1, 100), start: { x: number(s.x, -coordinateLimit, coordinateLimit * 2), y: number(s.y, -coordinateLimit, coordinateLimit * 2) }, end: { x: number(e.x, -coordinateLimit, coordinateLimit * 2), y: number(e.y, -coordinateLimit, coordinateLimit * 2) } };
+    if (a.scale !== undefined) item.scale = number(a.scale, 0.000001, 1000000);
     if (item.kind === 'text') {
-      if (typeof a.text !== 'string' || !a.text.trim() || a.text.length > 10000 || item.end.x - item.start.x < 16 || item.end.y <= item.start.y) fail();
-      item.text = a.text as string; item.fontSize = number(a.fontSize, 8, 256);
+      if (typeof a.text !== 'string' || !a.text.trim() || a.text.length > 10000 || item.end.x - item.start.x < 16 * (item.scale ?? 1) || item.end.y <= item.start.y) fail();
+      item.text = a.text as string; item.fontSize = number(a.fontSize, 8 * (item.scale ?? 1), 256 * (item.scale ?? 1));
     } else if (isInk(item)) {
       if (!Array.isArray(a.strokes) || !a.strokes.length || a.strokes.length > 2000) fail();
       let count = 0;
@@ -220,8 +251,8 @@ export async function readProject(file: Blob) {
     const b = project.background, comma = b.src.indexOf(',');
     const bytes = Uint8Array.from(atob(b.src.slice(comma + 1)), c => c.charCodeAt(0));
     const decoded = await loadImage(new Blob([bytes]));
-    if (decoded.width !== b.width || decoded.height !== b.height || !b.src.startsWith(`data:${imageHeader(bytes).mime};`)) throw new Error('內嵌圖片尺寸或格式不符。');
-    background = { ...decoded, x: b.x, y: b.y };
+    if (!b.src.startsWith(`data:${imageHeader(bytes).mime};`)) throw new Error('內嵌圖片尺寸或格式不符。');
+    background = { ...decoded, ...b }; // Display bounds may differ after resizing; retain the original image bytes.
   }
   return { project, background };
 }

@@ -3,7 +3,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use std::{fs, io::Write, path::Path, sync::{Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{SystemTime, UNIX_EPOCH}};
 use tauri::{Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_dialog::DialogExt;
 static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
 static QUIT_WINDOWS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 static LAST_WINDOW: Mutex<Option<String>> = Mutex::new(None);
@@ -59,14 +59,6 @@ async fn save_document(app: tauri::AppHandle, window: tauri::WebviewWindow, name
         }
         Ok(false)
     }).await.map_err(|_| "存檔工作中斷。".to_string())?
-}
-#[tauri::command]
-async fn confirm_discard(app: tauri::AppHandle, window: tauri::WebviewWindow, message: String) -> Result<bool, String> {
-    if message.len() > 500 { return Err("訊息過長。".into()); }
-    tauri::async_runtime::spawn_blocking(move || {
-        let _ = window.set_focus();
-        Ok(app.dialog().message(message).parent(&window).title("Markboxy").buttons(MessageDialogButtons::OkCancel).blocking_show())
-    }).await.map_err(|_| "確認視窗中斷。".to_string())?
 }
 // Quit checks one document at a time; cancelling leaves the remaining windows open.
 fn next_quit_window(app: &tauri::AppHandle) {
@@ -220,7 +212,7 @@ fn main() {
             if let tauri::WindowEvent::Focused(true) = event { *LAST_WINDOW.lock().unwrap() = Some(window.label().to_owned()); }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event { api.prevent_close(); let _ = window.app_handle().emit_to(window.label(), "editor-close-requested", ()); }
         })
-        .invoke_handler(tauri::generate_handler![open_document, save_document, confirm_discard, close_editor, cancel_quit, capture_region, capture_screen])
+        .invoke_handler(tauri::generate_handler![open_document, save_document, close_editor, cancel_quit, capture_region, capture_screen])
         .build(tauri::generate_context!()).expect("無法啟動 Markboxy")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {

@@ -12,7 +12,7 @@ export async function checkImagePaste(app, dimensions) {
   await app.pressKey('super+v');
   state = await app.getAXState({ emit: false, disableDiffing: true });
   assert.match(state, /會取代目前文件/);
-  const cancel = state.match(/^\s*(\d+) button Cancel,/m);
+  const cancel = state.match(/^\s*(\d+) button 取消/m);
   assert.ok(cancel);
   await app.click(Number(cancel[1]));
   state = await app.getAXState({ emit: false, disableDiffing: true });

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="UTF-8">
+<title>貼上圖片確認與復原回歸</title>
+<style>iframe{width:100%;height:80vh;border:0}output{display:block}</style>
+<iframe src="/"></iframe><output id="result">檢查中</output>
+<script type="module">
+document.querySelector('iframe').addEventListener('load', async event => {
+  const win = event.target.contentWindow, doc = win.document;
+  const canvas = doc.querySelector('#canvas'), modal = doc.querySelector('#clear-dialog');
+  const expect = (value, message) => { if (!value) throw new Error(message); };
+  const wait = async check => {
+    for (let i = 0; i < 100; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
+    throw new Error('等待操作完成逾時');
+  };
+  const dimensions = () => doc.querySelector('#dimensions').textContent;
+  const image = async (width, height, color) => {
+    const bitmap = doc.createElement('canvas'); bitmap.width = width; bitmap.height = height;
+    const ctx = bitmap.getContext('2d'); ctx.fillStyle = color; ctx.fillRect(0, 0, width, height);
+    return new win.File([await new Promise(resolve => bitmap.toBlob(resolve))], 'paste.png', {type:'image/png'});
+  };
+  const paste = file => {
+    canvas.focus();
+    const transfer = new win.DataTransfer(); transfer.items.add(file);
+    doc.dispatchEvent(new win.ClipboardEvent('paste', {bubbles:true, cancelable:true, clipboardData:transfer}));
+  };
+  const close = async accept => {
+    const closed = new Promise(resolve => modal.addEventListener('close', resolve, {once:true}));
+    modal.querySelector(accept ? '#confirm-clear' : '[value="cancel"]').click(); await closed; await Promise.resolve();
+  };
+  const key = (key, shiftKey = false) => doc.activeElement.dispatchEvent(new win.KeyboardEvent('keydown', {bubbles:true, ctrlKey:true, key, shiftKey}));
+  win.confirm = () => { throw new Error('不得顯示系統確認視窗'); };
+  try {
+    const first = await image(160, 120, '#e03030'), second = await image(240, 180, '#3060e0');
+    paste(first); await wait(() => dimensions() === '160 x 120');
+    expect(!modal.open, '首次貼上不應詢問');
+    paste(second); await wait(() => modal.open);
+    expect(doc.querySelector('#clear-title').textContent === '取代目前文件？', '貼上必須使用自訂 Dialog');
+    expect(doc.querySelector('#confirm-clear span').textContent === '取代文件', '取代按鈕文案');
+    await close(false); expect(dimensions() === '160 x 120', '取消保留原圖');
+    paste(second); await wait(() => modal.open); await close(true);
+    await wait(() => dimensions() === '240 x 180');
+    key('z'); expect(dimensions() === '160 x 120', '復原取代恢復原圖');
+    key('y'); expect(dimensions() === '240 x 180', '重做取代');
+    doc.querySelector('#trash').focus(); doc.querySelector('#trash').click();
+    expect(doc.querySelector('#clear-title').textContent === '清除畫布？', '共用 Dialog 正確切回清除');
+    await close(true);
+    expect(dimensions() === '1130 x 732', '清除恢復預設尺寸');
+    expect(doc.activeElement === canvas, '清除後焦點必須回畫布');
+    key('z'); expect(dimensions() === '240 x 180', '熱鍵復原恢復貼上的圖片');
+    const pixel = canvas.getContext('2d').getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
+    expect(pixel[2] > pixel[0] * 2, '復原後真的畫出原圖片像素');
+    key('y'); expect(dimensions() === '1130 x 732', '重做清除');
+    key('z'); expect(dimensions() === '240 x 180', '再次復原保留圖片');
+    if (new URL(location.href).searchParams.has('preview')) { paste(first); await wait(() => modal.open); }
+    document.querySelector('#result').textContent = 'PASS：貼上自訂確認、取消保留、取代與清除的熱鍵復原／重做、圖片像素及焦點';
+  } catch (error) { document.querySelector('#result').textContent = `FAIL：${error.message}；焦點 ${doc.activeElement?.tagName}#${doc.activeElement?.id}`; }
+});
+</script>

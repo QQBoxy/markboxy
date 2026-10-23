@@ -17,6 +17,7 @@ export async function checkStylePreference(tab, input) {
   assert.equal(await color(), '#ff2600', 'selecting an old annotation still displays its own style');
   assert.equal(await size(), '粗細第 2 級');
   await tab.playwright.locator('#trash').click();
+  await tab.playwright.locator('#confirm-clear').click();
   await tab.reload();
   assert.equal(await color(), '#00d500', 'reload restores the chosen preference, not the inspected annotation');
   assert.equal(await size(), '粗細第 4 級');

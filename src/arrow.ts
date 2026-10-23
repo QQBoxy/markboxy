@@ -2,7 +2,7 @@
 export const MAX_PIXELS = 50_000_000;
 
 export type Point = { x: number; y: number };
-export type Arrow = { start: Point; end: Point; size: number; color: string };
+export type Arrow = { start: Point; end: Point; size: number; color: string; scale?: number };
 
 export const referenceArrow: Arrow = {
   start: { x: 159.14417177914112, y: 224.5398773006135 },
@@ -12,19 +12,19 @@ export const referenceArrow: Arrow = {
 };
 
 /** Skitch outline reconstructed from runtime exports and the native geometry procedure. */
-export function arrowPath({ start, end, size }: Pick<Arrow, 'start' | 'end' | 'size'>): string {
-  if (![start.x, start.y, end.x, end.y, size].every(Number.isFinite) || size <= 0) {
+export function arrowPath({ start, end, size, scale = 1 }: Pick<Arrow, 'start' | 'end' | 'size' | 'scale'>): string {
+  if (![start.x, start.y, end.x, end.y, size, scale].every(Number.isFinite) || size <= 0 || scale <= 0) {
     throw new RangeError('Arrow coordinates must be finite and size must be positive.');
   }
   const dx = end.x - start.x, dy = end.y - start.y;
   const length = Math.hypot(dx, dy);
   if (!Number.isFinite(length)) throw new RangeError('Arrow length is too large.');
-  if (length < 0.01) return '';
+  if (length < 0.01 * scale) return '';
   // 120 original vectors cover five native sizes, three lengths and eight directions.
-  const s = Math.min(size, length / 5);
-  const headScale = (s - 1.5) * .7 + 6;
-  const headLength = Math.min(length * .4, Math.max(6, headScale * 2));
-  const tail = Math.max(s * .08, 1.5);
+  const s = Math.min(size * scale, length / 5);
+  const headScale = (s - 1.5 * scale) * .7 + 6 * scale;
+  const headLength = Math.min(length * .4, Math.max(6 * scale, headScale * 2));
+  const tail = Math.max(s * .08, 1.5 * scale);
   const neckHalf = Math.max(tail, Math.min(headLength * .25, headScale * .5));
   const neck = length - headLength, head = length - headLength * 1.1;
   const headHalf = headLength * .55;
@@ -48,8 +48,9 @@ export function arrowPath({ start, end, size }: Pick<Arrow, 'start' | 'end' | 's
 }
 
 /** Exact extrema of this arrow's lines and cubic curves, excluding shadow/handles. */
-export function expandedCanvas(width: number, height: number, arrow: Arrow) {
+export function expandedCanvas(width: number, height: number, arrow: Arrow, margin = 0) {
   if (![width, height].every(value => Number.isFinite(value) && value > 0)) throw new RangeError('Invalid canvas size.');
+  if (!Number.isFinite(margin) || margin < 0) throw new RangeError('Invalid canvas margin.');
   const values = [...arrowPath(arrow).matchAll(/-?\d+(?:\.\d+)?/g)].map(match => Number(match[0]));
   if (!values.length) return { width, height, offsetX: 0, offsetY: 0 };
   const points = Array.from({ length: values.length / 2 }, (_, i) => ({ x: values[i * 2]!, y: values[i * 2 + 1]! }));
@@ -73,10 +74,10 @@ export function expandedCanvas(width: number, height: number, arrow: Arrow) {
       }
     }
   }
-  const offsetX = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.x))));
-  const offsetY = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.y))));
-  const nextWidth = Math.max(width, Math.ceil(Math.max(...extrema.map(p => p.x)))) + offsetX;
-  const nextHeight = Math.max(height, Math.ceil(Math.max(...extrema.map(p => p.y)))) + offsetY;
+  const offsetX = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.x)) - margin));
+  const offsetY = Math.max(0, -Math.floor(Math.min(...extrema.map(p => p.y)) - margin));
+  const nextWidth = Math.max(width, Math.ceil(Math.max(...extrema.map(p => p.x)) + margin)) + offsetX;
+  const nextHeight = Math.max(height, Math.ceil(Math.max(...extrema.map(p => p.y)) + margin)) + offsetY;
   if (nextWidth * nextHeight > MAX_PIXELS) throw new RangeError('畫布總像素上限為 5000 萬（寬 × 高）。');
   return { width: nextWidth, height: nextHeight, offsetX, offsetY };
 }

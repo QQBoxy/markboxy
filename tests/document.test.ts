@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { expandedScene, imageHeader, shapePath, shapeStroke, TOOL_SIZES } from '../src/document.ts';
+import { expandedScene, sceneFrame, imageHeader, shapePath, shapeStroke, TOOL_SIZES } from '../src/document.ts';
 
 test('shape geometry handles reverse drags and includes thick strokes when expanding', () => {
   const item = { kind: 'rectangle' as const, start: { x: 80, y: 70 }, end: { x: 20, y: 10 }, color: '#123456', size: TOOL_SIZES[4] };
@@ -8,8 +8,27 @@ test('shape geometry handles reverse drags and includes thick strokes when expan
   assert.match(shapePath({ ...item, kind: 'ellipse' }), /a30,30/);
   assert.equal(shapePath({ ...item, end: item.start }), '');
   const expanded = expandedScene(80, 70, item);
-  assert.equal(expanded.width, 98); assert.equal(expanded.height, 96);
+  assert.equal(expanded.width, 108); assert.equal(expanded.height, 108);
   assert.throws(() => expandedScene(10000, 5000, { ...item, end: { x: 10001, y: 10 } }));
+});
+
+test('image canvas fits remaining annotations and returns exactly to the bitmap after deletion', () => {
+  const image = { x: 64, y: 40, width: 376, height: 348 };
+  const arrow = { kind: 'arrow' as const, start: { x: 4, y: 100 }, end: { x: 180, y: 160 }, size: TOOL_SIZES[4], color: '#ff2600' };
+  const other = { ...arrow, start: { x: 410, y: 200 }, end: { x: 500, y: 450 } };
+  const original = JSON.stringify([image, arrow, other]);
+  const full = sceneFrame(image, [arrow, other]);
+  assert.ok(full.x < image.x && full.y <= image.y);
+  assert.ok(full.x + full.width > 500 && full.y + full.height > 450, 'include arrowheads and shadow');
+  assert.deepEqual(sceneFrame(image, []), image, 'deleting the last annotation recovers the bitmap bounds');
+  const remaining = sceneFrame(image, [other]);
+  assert.equal(remaining.x, image.x, 'remove only the empty left extension');
+  assert.ok(remaining.x + remaining.width > 500 && remaining.y + remaining.height > 450, 'retain other outside annotations');
+  const rebased = { ...arrow, start: { x: arrow.start.x - full.x, y: arrow.start.y - full.y }, end: { x: arrow.end.x - full.x, y: arrow.end.y - full.y } };
+  const check = expandedScene(full.width, full.height, rebased);
+  assert.equal(check.offsetX, 0); assert.equal(check.offsetY, 0);
+  assert.equal(check.width, full.width); assert.equal(check.height, full.height);
+  assert.equal(JSON.stringify([image, arrow, other]), original, 'preview calculations do not mutate the live scene');
 });
 test('image headers reject oversized, truncated and disguised files before decoding', () => {
   const png = new Uint8Array(24);
