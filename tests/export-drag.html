@@ -1,0 +1,116 @@
+<!doctype html><meta charset="UTF-8"><title>桌面拖出與 Web 回歸</title>
+<style>iframe{width:100%;height:75vh;border:0}output{display:block;white-space:pre-wrap}</style>
+<output id="result">檢查中</output><iframe></iframe><iframe id="web-frame" src="/" hidden></iframe>
+<script type="module">
+const frame = document.querySelector('iframe'), result = document.querySelector('output');
+const expect = (value, message) => { if (!value) throw new Error(message); };
+const tick = () => new Promise(resolve => setTimeout(resolve, 30));
+const wait = async check => { for (let i=0;i<100;i++) { if(check()) return; await tick(); } throw new Error('等待逾時'); };
+const html = await (await fetch('/')).text();
+const setup = `
+window.isTauri=true; window.dragCalls=[]; window.endDrag=null;
+window.__TAURI_INTERNALS__={
+ metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},
+ transformCallback:()=>1, unregisterCallback:()=>{},
+ invoke:async(cmd,args)=>{
+  if(cmd==='start_image_drag'){
+   window.dragCalls.push(args); window.endDrag=(dropped=true)=>args.onEnd.onmessage(dropped); return true;
+  }
+  return 1;
+ }
+};
+HTMLElement.prototype.setPointerCapture=function(){};
+HTMLElement.prototype.releasePointerCapture=function(){};
+`;
+try {
+  frame.srcdoc = html.replace('<head>', '<head><script>'+setup+'<\/script>');
+  await new Promise(resolve=>frame.onload=resolve);
+  const win=frame.contentWindow, doc=win.document, button=doc.querySelector('#export');
+  await wait(()=>button.classList.contains('native-export'));
+  result.textContent='檢查：桌面手勢';
+  expect(!button.draggable, '桌面必須停用 HTML 自動預覽');
+  expect(win.getComputedStyle(button).webkitUserDrag==='none', '桌面長按不啟動 WebKit 元素拖曳');
+  const pointer=(type,x=10,buttons=1)=>button.dispatchEvent(new win.PointerEvent(type,{bubbles:true,pointerId:1,isPrimary:true,pointerType:'mouse',button:0,buttons,clientX:x,clientY:10}));
+  const click=()=>button.dispatchEvent(new win.MouseEvent('click',{bubbles:true,detail:1}));
+  pointer('pointerdown'); pointer('pointermove',12); pointer('pointerup',12,0); click();
+  expect(doc.querySelector('#export-dialog').open, '小幅移動仍為點擊匯出');
+  doc.querySelector('#cancel-export').click(); await tick();
+  pointer('pointerdown'); pointer('pointermove',40); pointer('pointerup',40,0); click();
+  await tick(); expect(win.dragCalls.length===0, '編碼完成前放開不得晚啟動拖曳');
+  expect(!doc.querySelector('#export-dialog').open, '拖曳放開不得誤開匯出對話框');
+  doc.querySelector('#format').click(); doc.querySelector('[data-format="jpeg"]').click();
+  pointer('pointerdown'); pointer('pointermove',40,0);
+  await wait(()=>win.dragCalls.length===1);
+  result.textContent='檢查：JPEG 與縮圖';
+  const first=win.dragCalls[0];
+  expect(first.name.endsWith('.jpg') && atob(first.data).startsWith('\xff\xd8\xff'), '桌面 JPG 為實際 JPEG');
+  expect(win.dragCalls.length===1, 'WebKit buttons=0 的移動仍須以 down/up 生命週期判斷');
+  const preview = new win.Image(); preview.src='data:image/png;base64,'+first.preview; await preview.decode();
+  expect(preview.width<=160 && preview.height<=160, '拖曳縮圖有尺寸上限');
+  win.endDrag(); await tick();
+  result.textContent='檢查：取消與 PNG';
+  doc.querySelector('#format').click(); doc.querySelector('[data-format="png"]').click();
+  // Delay the encoder to exercise cancellation independently of device speed.
+  const original=win.HTMLCanvasElement.prototype.toBlob; let release;
+  win.HTMLCanvasElement.prototype.toBlob=function(callback,...args){original.call(this,blob=>{release=()=>callback(blob);},...args);};
+  pointer('pointerdown'); pointer('pointermove',40); pointer('pointercancel');
+  await wait(()=>release); release(); await tick();
+  expect(win.dragCalls.length===1, 'pointercancel 必須丟棄未完成快照');
+  win.HTMLCanvasElement.prototype.toBlob=original;
+  pointer('pointerdown'); pointer('pointermove',40); await wait(()=>win.dragCalls.length===2);
+  expect(atob(win.dragCalls[1].data).startsWith('\x89PNG'), '桌面 PNG 為實際 PNG');
+  win.endDrag(); await tick();
+  // Pending encoding must not survive Escape or losing the window.
+  for(const cancel of [()=>doc.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Escape',bubbles:true})),()=>win.dispatchEvent(new win.Event('blur'))]){
+   release=null; win.HTMLCanvasElement.prototype.toBlob=function(callback,...args){original.call(this,blob=>{release=()=>callback(blob);},...args);};
+   pointer('pointerdown'); pointer('pointermove',40); cancel(); await wait(()=>release); release(); await tick();
+   expect(win.dragCalls.length===2, 'Escape／失焦不得晚啟動拖曳');
+  }
+  win.HTMLCanvasElement.prototype.toBlob=original;
+  result.textContent='檢查：拖回工具列';
+  const small=doc.createElement('canvas');small.width=40;small.height=30;
+  const incoming=new win.File([await new Promise(resolve=>small.toBlob(resolve))],'drop.png',{type:'image/png'});
+  const dropOn=(target,type='drop',url=false)=>{
+   const transfer=new win.DataTransfer();
+   if(url)transfer.setData('text/uri-list','file:///tmp/drop.png');else transfer.items.add(incoming);
+   const event=new win.DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:transfer});target.dispatchEvent(event);return {event,transfer};
+  };
+  for(const selector of ['.rail','.bottom-bar','#workspace']){
+   const count=win.dragCalls.length;
+   pointer('pointerdown');pointer('pointermove',40);await wait(()=>win.dragCalls.length===count+1);
+   const target=doc.querySelector(selector),over=dropOn(target,'dragover');
+   expect(over.event.defaultPrevented&&over.transfer.dropEffect==='none','自己拖回 '+selector+' 必須拒收');
+   expect(dropOn(target).event.defaultPrevented,'自己拖回不得交給預設導航');
+   expect(!doc.querySelector('#clear-dialog').open&&doc.querySelector('#dimensions').textContent==='1130 x 732','自己拖回不取代原文件');
+   win.endDrag(false);await tick();
+   expect(doc.querySelector('#status').textContent.includes('已取消拖出'),'取消回呼完成並釋放拖曳狀態');
+  }
+  for(const selector of ['.rail','.bottom-bar'])for(const url of [false,true])expect(dropOn(doc.querySelector(selector),'drop',url).event.defaultPrevented,'外部檔案或網址丟到工具列不得導航');
+  dropOn(doc.querySelector('#workspace'));await wait(()=>doc.querySelector('#dimensions').textContent==='40 x 30');
+  doc.querySelector('#shape-tool').click();expect(doc.querySelector('#shape-tool').getAttribute('aria-pressed')==='true','拖回取消後工具仍可使用');
+  result.textContent='檢查：Web 回歸';
+  const webFrame=document.querySelector('#web-frame');
+  frame.hidden=true; webFrame.hidden=false;
+  const web=webFrame.contentWindow, page=web.document; await wait(()=>page.querySelector('#canvas').width>0);
+  const canvas=page.querySelector('#canvas'), bounds=canvas.getBoundingClientRect();
+  canvas.setPointerCapture=()=>{}; canvas.releasePointerCapture=()=>{};
+  for(const [type,x,y] of [['pointerdown',.25,.3],['pointermove',.7,.65],['pointerup',.7,.65]]) canvas.dispatchEvent(new web.PointerEvent(type,{bubbles:true,pointerId:2,isPrimary:true,pointerType:'mouse',button:0,buttons:type==='pointerup'?0:1,clientX:bounds.left+bounds.width*x,clientY:bounds.top+bounds.height*y}));
+  expect(canvas.getAttribute('aria-description').startsWith('1 個標註'), '使用無文字箭頭文件驗證分頁圖片');
+  page.querySelector('#format').click(); page.querySelector('[data-format="jpeg"]').click();
+  const transfer=new web.DataTransfer(), event=new web.DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer});
+  page.querySelector('#export').dispatchEvent(event);
+  expect(page.querySelector('#export').draggable && !event.defaultPrevented, 'Web 保留 HTML 拖曳');
+  expect(transfer.getData('DownloadURL').startsWith('image/png:空白.png:data:image/png;base64,'), 'Web 選 JPG 仍維持既有 PNG DownloadURL');
+  const imageURL=transfer.getData('text/uri-list');
+  expect(imageURL.startsWith('blob:') && transfer.getData('text/plain')===imageURL, 'Web 分頁取得可開啟的圖片網址');
+  const response=await fetch(imageURL), blob=await response.blob();
+  expect(blob.type==='image/png', '分頁網址回傳 PNG');
+  const image=new Image(); image.src=imageURL; await image.decode();
+  expect(image.naturalWidth===1130 && image.naturalHeight===732, '分頁圖片保持原尺寸');
+  const again=new web.DataTransfer(); page.querySelector('#export').dispatchEvent(new web.DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:again}));
+  let revoked=false; try { await fetch(imageURL); } catch { revoked=true; }
+  expect(revoked && again.getData('text/uri-list')!==imageURL, '下次拖出更新快照並清理舊網址');
+  const link=document.createElement('a'); link.href=again.getData('text/uri-list'); link.target='_blank'; link.textContent='開啟拖出圖片預覽'; document.body.append(link);
+  result.textContent='PASS：桌面格式／縮圖、手勢取消、拖回工具列／畫布拒收與再次操作、外部圖片匯入、Web 下載與分頁網址';
+}catch(error){result.textContent='FAIL：'+error.stack;}
+</script>

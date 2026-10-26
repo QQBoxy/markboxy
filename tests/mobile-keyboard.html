@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<title>手機檔名鍵盤回歸檢查</title>
+<style>
+body{font:16px system-ui;margin:24px}iframe{width:390px;height:740px;border:1px solid #ccc}pre{white-space:pre-wrap}
+</style>
+<h1>手機檔名鍵盤回歸檢查</h1>
+<p>模擬可視區域變化；不代表實體手機鍵盤已驗證。</p>
+<pre id="results">執行中…</pre>
+<iframe src="../" title="390 × 740 手機寬度編輯器"></iframe>
+<script type="module">
+const frame = document.querySelector('iframe');
+frame.addEventListener('load', () => {
+  const win = frame.contentWindow, doc = win.document;
+  const viewport = win.visualViewport, name = doc.querySelector('#name');
+  const footer = doc.querySelector('.bottom-bar'), output = document.querySelector('#results');
+  const results = [], descriptors = {};
+  const originalName = name.value;
+  let height = win.innerHeight, offsetTop = 0, scale = 1;
+  function check(label, condition) {
+    if (!condition) throw new Error(label);
+    results.push(`PASS ${label}`);
+  }
+  function resize(nextHeight, nextOffset = 0, nextScale = 1, event = 'resize') {
+    height = nextHeight; offsetTop = nextOffset; scale = nextScale;
+    viewport.dispatchEvent(new win.Event(event));
+  }
+  function visible() {
+    const box = name.getBoundingClientRect();
+    return box.top >= offsetTop && box.bottom <= offsetTop + height;
+  }
+  try {
+    for (const [key, get] of Object.entries({height: () => height, offsetTop: () => offsetTop, scale: () => scale})) {
+      descriptors[key] = Object.getOwnPropertyDescriptor(viewport, key);
+      Object.defineProperty(viewport, key, {configurable: true, get});
+    }
+    name.focus();
+    check('無鍵盤時底欄貼底', footer.getBoundingClientRect().bottom === win.innerHeight);
+    resize(400);
+    check('鍵盤縮小可視區域後輸入框完整可見', visible());
+    name.value = '手機改名'; name.dispatchEvent(new win.Event('input', {bubbles: true}));
+    check('改名後輸入框仍可見', name.value === '手機改名' && visible());
+    resize(360, 80, 1, 'scroll');
+    check('瀏覽器自動平移後仍可見', visible());
+    resize(290, 0);
+    check('鍵盤切換高度後仍可見', visible());
+    resize(win.innerHeight);
+    check('收起鍵盤但保留焦點時回到底部', footer.getBoundingClientRect().bottom === win.innerHeight);
+    resize(400, 0, 2);
+    check('捏合放大不誤判成鍵盤', footer.style.bottom === '0px');
+    resize(400); name.blur();
+    check('離開檔名輸入框時清除位移', footer.style.bottom === '0px');
+    resize(300);
+    check('未編輯檔名時不移動底欄', footer.style.bottom === '0px');
+    output.textContent = results.join('\n') + '\n全部通過';
+  } catch (error) {
+    output.textContent = results.join('\n') + '\nFAIL ' + error.message;
+  } finally {
+    name.value = originalName; name.dispatchEvent(new win.Event('input', {bubbles: true})); name.blur();
+    for (const key of Object.keys(descriptors)) {
+      if (descriptors[key]) Object.defineProperty(viewport, key, descriptors[key]);
+      else delete viewport[key];
+    }
+    viewport.dispatchEvent(new win.Event('resize'));
+  }
+});
+</script>

@@ -1,0 +1,26 @@
+<!doctype html><meta charset="UTF-8"><title>Web 拖到分頁開圖</title>
+<style>iframe{width:100%;height:70vh;border:0}output{display:block}</style>
+<output>檢查中</output><iframe src="/"></iframe>
+<script type="module">
+const frame=document.querySelector('iframe'), result=document.querySelector('output');
+frame.addEventListener('load',async()=>{
+ const win=frame.contentWindow,doc=win.document,button=doc.querySelector('#export');
+ const expect=(ok,message)=>{if(!ok)throw new Error(message);};
+ try{
+  const canvas=doc.querySelector('#canvas'), rect=canvas.getBoundingClientRect();
+  canvas.setPointerCapture=()=>{};canvas.releasePointerCapture=()=>{};
+  for(const [type,x,y] of [['pointerdown',.25,.3],['pointermove',.7,.65],['pointerup',.7,.65]]) canvas.dispatchEvent(new win.PointerEvent(type,{bubbles:true,pointerId:2,isPrimary:true,pointerType:'mouse',button:0,buttons:type==='pointerup'?0:1,clientX:rect.left+rect.width*x,clientY:rect.top+rect.height*y}));
+  expect(canvas.getAttribute('aria-description').startsWith('1 個標註'),'無文字箭頭已建立');
+  const transfer=new win.DataTransfer();button.dispatchEvent(new win.DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+  const url=transfer.getData('text/uri-list');
+  expect(url.startsWith('blob:')&&url===transfer.getData('text/plain'),'提供可開啟的圖片網址');
+  expect(transfer.getData('DownloadURL').startsWith('image/png:空白.png:data:image/png;base64,'),'保留 PNG 拖出下載');
+  const blob=await(await fetch(url)).blob();expect(blob.type==='image/png','網址回傳 PNG');
+  const image=new Image();image.src=url;await image.decode();expect(image.naturalWidth===1130&&image.naturalHeight===732,'保持原尺寸');
+  const next=new win.DataTransfer();button.dispatchEvent(new win.DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:next}));
+  let revoked=false;try{await fetch(url);}catch{revoked=true;}expect(revoked,'下次拖出釋放舊網址');
+  const link=document.createElement('a');link.href=next.getData('text/uri-list');link.target='_blank';link.textContent='開啟拖出圖片預覽';document.body.append(link);
+  result.textContent='PASS：無文字箭頭、PNG 網址與原尺寸、保留拖出下載、釋放舊網址';
+ }catch(error){result.textContent='FAIL：'+error.stack;}
+},{once:true});
+</script>

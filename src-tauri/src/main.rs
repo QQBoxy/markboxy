@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod drag_out;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use std::{fs, io::Write, path::Path, sync::{Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::{SystemTime, UNIX_EPOCH}};
@@ -163,8 +164,24 @@ fn capture_windows(path: &Path, full_screen: bool) -> std::io::Result<std::proce
     let result = command.output();
     let _ = fs::remove_file(script); result
 }
+fn editor_navigation_allowed(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> bool {
+    let bundled = url.port().is_none() && match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        _ => false,
+    };
+    (bundled || dev_url.is_some_and(|dev| url.origin() == dev.origin()))
+        && url.username().is_empty() && url.password().is_none()
+        && matches!(url.path(), "" | "/" | "/index.html")
+}
 fn main() {
     tauri::Builder::default()
+        // Covers the configured main window and every later editor window, even
+        // when a native file drop does not dispatch a cancellable DOM drop event.
+        .plugin(tauri::plugin::Builder::<_, ()>::new("editor-navigation")
+            .on_navigation(|webview, url| editor_navigation_allowed(url,
+                if cfg!(debug_assertions) { webview.app_handle().config().build.dev_url.as_ref() } else { None }))
+            .build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _, event| {
             if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
@@ -212,7 +229,7 @@ fn main() {
             if let tauri::WindowEvent::Focused(true) = event { *LAST_WINDOW.lock().unwrap() = Some(window.label().to_owned()); }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event { api.prevent_close(); let _ = window.app_handle().emit_to(window.label(), "editor-close-requested", ()); }
         })
-        .invoke_handler(tauri::generate_handler![open_document, save_document, close_editor, cancel_quit, capture_region, capture_screen])
+        .invoke_handler(tauri::generate_handler![open_document, save_document, close_editor, cancel_quit, capture_region, capture_screen, drag_out::start_image_drag])
         .build(tauri::generate_context!()).expect("無法啟動 Markboxy")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {
@@ -223,6 +240,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_drop_cannot_navigate_away_from_editor() {
+        let dev = tauri::Url::parse("http://127.0.0.1:5173").unwrap();
+        for value in ["tauri://localhost", "tauri://localhost/", "tauri://localhost/index.html", "http://tauri.localhost/", "https://tauri.localhost/index.html#editor"] {
+            assert!(editor_navigation_allowed(&tauri::Url::parse(value).unwrap(), None), "{value}");
+        }
+        for value in ["file:///tmp/image.png", "data:image/png;base64,AAA", "blob:tauri://localhost/image", "https://example.com/", "tauri://localhost/image.png", "http://tauri.localhost:80/evil.html", "http://user@tauri.localhost/", "http://127.0.0.1:5173/"] {
+            assert!(!editor_navigation_allowed(&tauri::Url::parse(value).unwrap(), None), "{value}");
+        }
+        assert!(editor_navigation_allowed(&dev, Some(&dev)));
+        assert!(!editor_navigation_allowed(&tauri::Url::parse("http://127.0.0.1:5174/").unwrap(), Some(&dev)));
+        assert!(!editor_navigation_allowed(&tauri::Url::parse("http://127.0.0.1:5173/image.png").unwrap(), Some(&dev)));
+    }
     #[test]
     fn atomic_save_replaces_complete_content() {
         let dir = std::env::temp_dir().join(format!("markboxy-save-test-{}", std::process::id()));

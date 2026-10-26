@@ -1,4 +1,4 @@
-import { desktop, nativeOpen, nativeCapture, nativeSave, desktopEvents } from './desktop.ts';
+import { desktop, nativeOpen, nativeCapture, nativeSave, nativeDrag, desktopEvents } from './desktop.ts';
 import { arrowPath, type Point } from './arrow.ts';
 
 import { TOOL_SIZES, resizeScene, readStylePreference, shapePath, shapeStroke, expandedScene, sceneFrame, loadImage, isInk, inkAlpha, textSize, textFont, textLines, type Annotation, type Background, type Crop, readProject, type Project } from './document.ts';
@@ -29,6 +29,7 @@ const textToolPath = new Path2D(document.querySelector('#i-text path')!.getAttri
 const arrowMenu = document.querySelector<HTMLElement>('#arrow-menu')!;
 let holdTimer: ReturnType<typeof setTimeout> | undefined;
 const workspace = document.querySelector<HTMLElement>('#workspace')!;
+let nativeExportActive = false;
 const stage = document.querySelector<HTMLElement>('#stage')!;
 const download = document.querySelector<HTMLAnchorElement>('#download')!;
 const name = document.querySelector<HTMLInputElement>('#name')!;
@@ -916,6 +917,17 @@ document.addEventListener('paste', event => {
   void openFile(image);
 });
 fileInput.addEventListener('change', () => { const file = fileInput.files?.[0]; fileInput.value = ''; if (file) void openFile(file); });
+// Reject file/URL drops outside the importer before WebView's default navigation
+// can replace the editor. A native export dropped back into this window is a cancel.
+for (const type of ['dragenter', 'dragover', 'drop']) document.addEventListener(type, event => {
+  const transfer = (event as DragEvent).dataTransfer;
+  if (!nativeExportActive && !transfer?.types.some(type => ['Files', 'text/uri-list', 'DownloadURL'].includes(type))) return;
+  event.preventDefault();
+  if (nativeExportActive || !(event.target instanceof Node && workspace.contains(event.target)) || !transfer?.types.includes('Files')) {
+    if (transfer) transfer.dropEffect = 'none';
+    event.stopPropagation();
+  }
+}, true);
 workspace.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } });
 workspace.addEventListener('drop', event => {
   event.preventDefault();
@@ -925,6 +937,18 @@ workspace.addEventListener('drop', event => {
 });
 function resizeName() { name.style.width = `${Math.min(240, Math.max(28, name.value.length * 12))}px`; }
 name.addEventListener('input', () => { resizeName(); changed = true; revision++; invalidateDownload(); });
+function updateNameViewport() {
+  const viewport = window.visualViewport;
+  // Fixed controls follow the layout viewport; the keyboard can shrink and pan only the visual viewport.
+  const inset = document.activeElement === name && viewport?.scale === 1
+    ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
+  document.querySelector<HTMLElement>('.bottom-bar')!.style.bottom = `${inset}px`;
+}
+name.addEventListener('focus', updateNameViewport);
+name.addEventListener('blur', updateNameViewport);
+window.visualViewport?.addEventListener('resize', updateNameViewport);
+window.visualViewport?.addEventListener('scroll', updateNameViewport);
+window.addEventListener('resize', updateNameViewport);
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-zoom]')) {
   button.addEventListener('click', () => {
     if (resizeScale !== null) { if (button.dataset.zoom !== 'fit') setResizeScale(Number(button.dataset.zoom)); closeMenus(); return; }
@@ -942,14 +966,14 @@ function setFormat(value: typeof format) {
     b.setAttribute('aria-pressed', String(b.dataset.format === value));
   }
   document.querySelector('#export .png-file b')!.textContent = value === 'jpeg' ? 'JPG' : 'PNG';
-  document.querySelector('#export')!.setAttribute('aria-label', `匯出 ${value === 'jpeg' ? 'JPEG' : 'PNG'}；拖出 PNG`);
-  document.querySelector('#export')!.setAttribute('title', '點一下匯出所選格式；拖出固定使用 PNG');
+  document.querySelector('#export')!.setAttribute('aria-label', `匯出 ${value === 'jpeg' ? 'JPEG' : 'PNG'}；拖出 ${desktop && value === 'jpeg' ? 'JPEG' : 'PNG'}`);
+  document.querySelector('#export')!.setAttribute('title', desktop ? '點一下匯出；拖出使用所選格式' : '點一下匯出所選格式；拖出固定使用 PNG');
   document.querySelector('#share')!.setAttribute('aria-label', '匯出圖片');
   document.querySelector('#share')!.setAttribute('title', `匯出 ${value === 'jpeg' ? 'JPG' : 'PNG'}…`);
 }
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-format]')) b.addEventListener('click', () => { setFormat(b.dataset.format as typeof format); closeMenus(); });
 exportFormat.addEventListener('change', () => setFormat(exportFormat.value as typeof format));
-function exportPNG() {
+function exportCanvas() {
   if (!finishText()) throw new Error('請先完成文字編輯。');
   finishWetInk();
   if (cropDraft) throw new Error('請先套用或取消裁切／縮放。');
@@ -957,6 +981,10 @@ function exportPNG() {
   output.width = view().width;
   output.height = view().height;
   drawScene(output);
+  return output;
+}
+function exportPNG() {
+  const output = exportCanvas();
   // ponytail: DownloadURL drag-out needs a synchronous URL; normal file exports use Blob encoding.
   const url = output.toDataURL('image/png');
   if (!url.startsWith('data:image/png;base64,')) throw new Error('瀏覽器未產生 PNG 格式。');
@@ -965,11 +993,7 @@ function exportPNG() {
 function filename(value = name.value, extension = format === 'jpeg' ? 'jpg' : 'png') {
   return `${value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/\.(png|jpg|jpeg|markboxy)$/i, '') || '空白'}.${extension}`;
 }
-async function exportImage(outputFormat: typeof format = format) {
-  if (!finishText()) throw new Error('請先完成文字編輯。');
-  finishWetInk();
-  if (cropDraft) throw new Error('請先套用或取消裁切／縮放。');
-  const output = document.createElement('canvas'); output.width = view().width; output.height = view().height; drawScene(output);
+async function exportImage(outputFormat: typeof format = format, output = exportCanvas()) {
   const quality = Number(document.querySelector<HTMLInputElement>('#quality')!.value) / 100;
   return new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('瀏覽器無法編碼圖片，可能超過此裝置的畫布尺寸或記憶體限制。')), `image/${outputFormat}`, quality));
 }
@@ -1015,7 +1039,12 @@ function showExport() {
   exportName.value = name.value.trim() || '空白';
   if (!dialog.open) dialog.showModal();
 }
-for (const id of ['export', 'share']) document.getElementById(id)!.addEventListener('click', showExport);
+const exportButton = document.querySelector<HTMLButtonElement>('#export')!;
+let suppressExportClick = false;
+exportButton.addEventListener('click', event => {
+  if (!suppressExportClick || event.detail === 0) showExport();
+});
+document.querySelector('#share')!.addEventListener('click', showExport);
 document.querySelector('#cancel-export')!.addEventListener('click', () => dialog.close());
 document.querySelector('#export-form')!.addEventListener('submit', async event => {
   event.preventDefault();
@@ -1031,15 +1060,77 @@ document.querySelector('#export-form')!.addEventListener('submit', async event =
     notice(`匯出失敗：${error instanceof Error ? error.message : '請再試一次。'} 畫布仍保留。`);
   }
 });
-document.querySelector('#export')!.addEventListener('dragstart', event => {
+let webDragURL: string | undefined;
+exportButton.addEventListener('dragstart', event => {
+  if (desktop) { event.preventDefault(); return; }
   const dragEvent = event as DragEvent;
   try {
     const url = exportPNG();
+    const bytes = Uint8Array.from(atob(url.split(',')[1]!), character => character.charCodeAt(0));
+    const imageURL = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+    // ponytail: keep the latest drag URL alive for tab navigation; older previews
+    // stay displayed, but cannot be reloaded after the next drag revokes their URL.
+    if (webDragURL) URL.revokeObjectURL(webDragURL);
+    webDragURL = imageURL;
     dragEvent.dataTransfer!.setData('DownloadURL', `image/png:${filename(name.value, 'png')}:${url}`);
-    dragEvent.dataTransfer!.effectAllowed = 'copy';
-    notice('已準備 PNG 拖出；若瀏覽器不支援，請點底部 PNG 按鈕匯出。');
+    dragEvent.dataTransfer!.setData('text/uri-list', imageURL);
+    dragEvent.dataTransfer!.setData('text/plain', imageURL);
+    dragEvent.dataTransfer!.effectAllowed = 'copyLink';
+    notice('已準備 PNG，可拖到瀏覽器分頁開啟圖片；也可拖出下載。');
   } catch { event.preventDefault(); notice('無法拖出圖片，請使用點擊匯出。'); }
 });
+if (desktop) {
+  // WKWebView's automatic HTML drag preview can tear the composited canvas.
+  // Own the gesture and supply a small image to the OS instead of snapshotting the clipped tray.
+  exportButton.draggable = false;
+  exportButton.classList.add('native-export');
+  setFormat(format);
+  let gesture: { id: number; x: number; y: number; moved: boolean; image: Promise<{ blob: Blob; name: string; preview: string }> } | null = null;
+  let busy = false;
+  exportButton.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || !event.isPrimary || event.pointerType !== 'mouse' || busy) return;
+    suppressExportClick = false;
+    const image = (async () => {
+      cancelDrag(); closeMenus();
+      const output = exportCanvas();
+      const blob = exportImage(format, output);
+      let safeName = filename(name.value.trim().slice(0, 60));
+      if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safeName)) safeName = `_${safeName}`;
+      const thumbnail = document.createElement('canvas');
+      const scale = Math.min(1, 160 / Math.max(output.width, output.height));
+      thumbnail.width = Math.max(1, Math.round(output.width * scale)); thumbnail.height = Math.max(1, Math.round(output.height * scale));
+      thumbnail.getContext('2d')!.drawImage(output, 0, 0, thumbnail.width, thumbnail.height);
+      return { blob: await blob, name: safeName, preview: thumbnail.toDataURL('image/png') };
+    })();
+    // A click or cancelled gesture may never consume this promise.
+    void image.catch(() => {});
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, image };
+    exportButton.setPointerCapture(event.pointerId);
+  });
+  exportButton.addEventListener('pointermove', async event => {
+    const current = gesture;
+    if (!current || current.id !== event.pointerId || current.moved) return;
+    if (Math.hypot(event.clientX - current.x, event.clientY - current.y) < 5) return;
+    current.moved = suppressExportClick = true;
+    busy = true;
+    try {
+      const image = await current.image;
+      if (gesture !== current) return;
+      const dropped = await nativeDrag(image.blob, image.name, image.preview, () => {
+        if (gesture !== current) return false;
+        gesture = null;
+        exportButton.releasePointerCapture(event.pointerId);
+        nativeExportActive = true;
+        return true;
+      });
+      notice(dropped ? '圖片已拖出；可編輯文件仍須另外儲存。' : '已取消拖出，畫布仍保留。');
+    } catch (error) { notice(`拖出失敗：${String(error)} 請使用點擊匯出，畫布仍保留。`); }
+    finally { nativeExportActive = false; busy = false; if (gesture === current) gesture = null; }
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) exportButton.addEventListener(type, () => { gesture = null; });
+  window.addEventListener('blur', () => { gesture = null; });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') gesture = null; });
+}
 document.querySelector('#close-notification')!.addEventListener('click', () => { document.querySelector<HTMLElement>('#notification')!.hidden = true; });
 document.addEventListener('keydown', event => {
   // Native editing shortcuts keep canvas focus; only Tab navigation needs the outer focus ring.
